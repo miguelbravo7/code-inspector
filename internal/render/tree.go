@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"code-inspector/internal/inspector"
 )
@@ -28,10 +29,10 @@ func PrintTree(root *inspector.TreeNode, writer io.Writer) error {
 }
 
 func renderNode(writer io.Writer, node *inspector.TreeNode, prefix string, isLast bool) error {
-	connector := "|-- "
-	nextPrefix := prefix + "|   "
+	connector := "├── "
+	nextPrefix := prefix + "│   "
 	if isLast {
-		connector = "`-- "
+		connector = "└── "
 		nextPrefix = prefix + "    "
 	}
 
@@ -53,13 +54,14 @@ func renderNode(writer io.Writer, node *inspector.TreeNode, prefix string, isLas
 		return nil
 	}
 
+	layout := buildFunctionLayout(node.Metrics.Functions)
+
 	for idx, fn := range node.Metrics.Functions {
-		fnLast := idx == len(node.Metrics.Functions)-1
-		fnConnector := "|-- "
-		if fnLast {
-			fnConnector = "`-- "
+		fnConnector := "├── "
+		if idx == len(node.Metrics.Functions)-1 {
+			fnConnector = "└── "
 		}
-		if _, err := fmt.Fprintf(writer, "%s%s%s\n", nextPrefix, fnConnector, formatFunction(fn)); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s%s%s\n", nextPrefix, fnConnector, formatFunction(fn, layout.leftWidth)); err != nil {
 			return err
 		}
 	}
@@ -86,18 +88,52 @@ func formatNode(node *inspector.TreeNode) string {
 	return label
 }
 
-func formatFunction(fn inspector.FunctionInfo) string {
-	parts := []string{"fn: " + fn.Name}
-	if fn.Signature != "" {
-		parts = append(parts, fn.Signature)
+type functionFormatLayout struct {
+	leftWidth int
+}
+
+func buildFunctionLayout(functions []inspector.FunctionInfo) functionFormatLayout {
+	maxWidth := 0
+	for _, fn := range functions {
+		width := utf8.RuneCountInString(formatFunctionLeft(fn))
+		if width > maxWidth {
+			maxWidth = width
+		}
 	}
+	return functionFormatLayout{leftWidth: maxWidth}
+}
+
+func formatFunction(fn inspector.FunctionInfo, leftWidth int) string {
+	left := formatFunctionLeft(fn)
+	rightParts := make([]string, 0, 2)
 	if fn.Line > 0 {
-		parts = append(parts, fmt.Sprintf("line %d", fn.Line))
+		rightParts = append(rightParts, fmt.Sprintf("line %d", fn.Line))
 	}
 	if fn.LineCount > 0 {
-		parts = append(parts, fmt.Sprintf("lines %d", fn.LineCount))
+		rightParts = append(rightParts, fmt.Sprintf("lines %d", fn.LineCount))
 	}
-	return strings.Join(parts, " | ")
+
+	if len(rightParts) == 0 {
+		return left
+	}
+
+	left = padRightRunes(left, leftWidth)
+	return left + " | " + strings.Join(rightParts, " | ")
+}
+
+func formatFunctionLeft(fn inspector.FunctionInfo) string {
+	if fn.Signature == "" {
+		return "fn: " + fn.Name
+	}
+	return "fn: " + fn.Name + " | " + fn.Signature
+}
+
+func padRightRunes(input string, width int) string {
+	current := utf8.RuneCountInString(input)
+	if current >= width {
+		return input
+	}
+	return input + strings.Repeat(" ", width-current)
 }
 
 func summarizeWarning(message string) string {
