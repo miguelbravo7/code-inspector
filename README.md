@@ -46,6 +46,12 @@ Compare traversal concurrency against sequential baseline:
 go test ./internal/inspector -run ^$ -bench BuildTreeTraversal -benchmem
 ```
 
+Run the traversal benchmark matrix (supported-only true/false across multiple file counts):
+
+```bash
+go test ./internal/inspector -run ^$ -bench BuildTreeTraversalMatrix -benchmem
+```
+
 Run analyzer hotspot benchmarks:
 
 ```bash

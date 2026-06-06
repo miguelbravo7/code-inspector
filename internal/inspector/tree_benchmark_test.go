@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+const defaultTraversalFixtureFileCount = 1600
+
 func BenchmarkBuildTreeTraversal(b *testing.B) {
 	rootPath := createTraversalBenchmarkFixture(b)
 	cfg := Config{
@@ -45,11 +47,79 @@ func BenchmarkBuildTreeTraversal(b *testing.B) {
 	})
 }
 
+func BenchmarkBuildTreeTraversalMatrix(b *testing.B) {
+	fileCounts := []int{200, 800, 1600}
+	supportedModes := []bool{true, false}
+
+	for _, fileCount := range fileCounts {
+		fileCount := fileCount
+		for _, supportedOnly := range supportedModes {
+			supportedOnly := supportedOnly
+			caseName := fmt.Sprintf("files=%d/supported_only=%t", fileCount, supportedOnly)
+
+			b.Run(caseName, func(b *testing.B) {
+				rootPath := createTraversalBenchmarkFixtureWithFileCount(b, fileCount)
+				cfg := Config{
+					ExcludedDirs:  BuildExcludeSet(false, nil),
+					SupportedOnly: supportedOnly,
+				}
+
+				b.Run("concurrent", func(b *testing.B) {
+					b.ReportAllocs()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						tree, err := BuildTree(rootPath, cfg)
+						if err != nil {
+							b.Fatalf("BuildTree returned error: %v", err)
+						}
+						if tree == nil {
+							b.Fatalf("BuildTree returned nil tree")
+						}
+					}
+				})
+
+				b.Run("sequential_baseline", func(b *testing.B) {
+					b.ReportAllocs()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						tree, err := buildTreeSequentialBenchmark(rootPath, cfg)
+						if err != nil {
+							b.Fatalf("buildTreeSequentialBenchmark returned error: %v", err)
+						}
+						if tree == nil {
+							b.Fatalf("buildTreeSequentialBenchmark returned nil tree")
+						}
+					}
+				})
+			})
+		}
+	}
+}
+
 func createTraversalBenchmarkFixture(b *testing.B) string {
+	return createTraversalBenchmarkFixtureWithFileCount(b, defaultTraversalFixtureFileCount)
+}
+
+func createTraversalBenchmarkFixtureWithFileCount(b *testing.B, totalFileCount int) string {
 	b.Helper()
+	if totalFileCount <= 0 {
+		totalFileCount = 1
+	}
+
+	const directoryCount = 10
+	const bucketCount = directoryCount * 2 // per directory: root level + nested level
+	if totalFileCount < bucketCount {
+		totalFileCount = bucketCount
+	}
+
+	filesPerBucket := totalFileCount / bucketCount
+	remainder := totalFileCount % bucketCount
 
 	rootPath := b.TempDir()
-	for dirIdx := 0; dirIdx < 10; dirIdx++ {
+	globalFileIdx := 0
+	bucketIdx := 0
+
+	for dirIdx := 0; dirIdx < directoryCount; dirIdx++ {
 		dirPath := filepath.Join(rootPath, fmt.Sprintf("pkg_%02d", dirIdx))
 		if err := os.MkdirAll(dirPath, 0o755); err != nil {
 			b.Fatalf("mkdir failed for %q: %v", dirPath, err)
@@ -60,16 +130,20 @@ func createTraversalBenchmarkFixture(b *testing.B) string {
 			b.Fatalf("mkdir failed for %q: %v", nestedPath, err)
 		}
 
-		for fileIdx := 0; fileIdx < 80; fileIdx++ {
-			filename, content := traversalFixtureFile(fileIdx, dirIdx)
-			if err := os.WriteFile(filepath.Join(dirPath, filename), []byte(content), 0o644); err != nil {
-				b.Fatalf("write failed for %q: %v", filename, err)
+		paths := []string{dirPath, nestedPath}
+		for _, targetPath := range paths {
+			fileCount := filesPerBucket
+			if bucketIdx < remainder {
+				fileCount++
 			}
-		}
-		for fileIdx := 0; fileIdx < 80; fileIdx++ {
-			filename, content := traversalFixtureFile(fileIdx+80, dirIdx)
-			if err := os.WriteFile(filepath.Join(nestedPath, filename), []byte(content), 0o644); err != nil {
-				b.Fatalf("write failed for %q: %v", filename, err)
+			bucketIdx++
+
+			for i := 0; i < fileCount; i++ {
+				filename, content := traversalFixtureFile(globalFileIdx, dirIdx)
+				if err := os.WriteFile(filepath.Join(targetPath, filename), []byte(content), 0o644); err != nil {
+					b.Fatalf("write failed for %q: %v", filename, err)
+				}
+				globalFileIdx++
 			}
 		}
 	}
