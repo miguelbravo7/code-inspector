@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 var defaultExcludedDirs = []string{
@@ -79,7 +81,9 @@ func walkTree(parent *TreeNode, cfg Config) error {
 		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
 	})
 
-	for _, entry := range entries {
+	analyzedFiles := analyzeFilesInDirectory(parent.Path, entries)
+
+	for idx, entry := range entries {
 		name := entry.Name()
 		fullPath := filepath.Join(parent.Path, name)
 
@@ -95,22 +99,98 @@ func walkTree(parent *TreeNode, cfg Config) error {
 			continue
 		}
 
-		fileNode := &TreeNode{Name: name, Path: fullPath, IsDir: false}
-		metrics, supported, analyzeErr := AnalyzeFile(fullPath)
-		if supported {
-			fileNode.Metrics = metrics
-		}
-		if analyzeErr != nil {
-			fileNode.Warning = analyzeErr.Error()
-		}
-
-		if cfg.SupportedOnly && !supported {
+		analyzed, ok := analyzedFiles[idx]
+		if !ok {
 			continue
 		}
-		parent.Children = append(parent.Children, fileNode)
+
+		if cfg.SupportedOnly && !analyzed.supported {
+			continue
+		}
+		parent.Children = append(parent.Children, analyzed.node)
 	}
 
 	return nil
+}
+
+type fileAnalysisResult struct {
+	node      *TreeNode
+	supported bool
+}
+
+type indexedFileAnalysisResult struct {
+	index  int
+	result fileAnalysisResult
+}
+
+func analyzeFilesInDirectory(parentPath string, entries []os.DirEntry) map[int]fileAnalysisResult {
+	fileIndexes := make([]int, 0, len(entries))
+	for idx, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		fileIndexes = append(fileIndexes, idx)
+	}
+
+	if len(fileIndexes) == 0 {
+		return nil
+	}
+
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > len(fileIndexes) {
+		workerCount = len(fileIndexes)
+	}
+
+	tasks := make(chan int, len(fileIndexes))
+	results := make(chan indexedFileAnalysisResult, len(fileIndexes))
+
+	var wg sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range tasks {
+				entry := entries[idx]
+				name := entry.Name()
+				fullPath := filepath.Join(parentPath, name)
+
+				fileNode := &TreeNode{Name: name, Path: fullPath, IsDir: false}
+				metrics, supported, analyzeErr := AnalyzeFile(fullPath)
+				if supported {
+					fileNode.Metrics = metrics
+				}
+				if analyzeErr != nil {
+					fileNode.Warning = analyzeErr.Error()
+				}
+
+				results <- indexedFileAnalysisResult{
+					index: idx,
+					result: fileAnalysisResult{
+						node:      fileNode,
+						supported: supported,
+					},
+				}
+			}
+		}()
+	}
+
+	for _, idx := range fileIndexes {
+		tasks <- idx
+	}
+	close(tasks)
+
+	wg.Wait()
+	close(results)
+
+	analyzed := make(map[int]fileAnalysisResult, len(fileIndexes))
+	for item := range results {
+		analyzed[item.index] = item.result
+	}
+
+	return analyzed
 }
 
 func pruneUnsupportedDirectories(node *TreeNode) bool {

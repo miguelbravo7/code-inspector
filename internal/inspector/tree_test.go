@@ -39,6 +39,46 @@ func TestBuildTreeSupportedOnlyPrunesUnsupported(t *testing.T) {
 	}
 }
 
+func TestBuildTreeDeterministicChildOrdering(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, "zdir"), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "adir"), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(tmpDir, "b.py"), "x = 1\n")
+	mustWriteFile(t, filepath.Join(tmpDir, "A.go"), "package main\n")
+	mustWriteFile(t, filepath.Join(tmpDir, "c.txt"), "note\n")
+
+	cfg := Config{
+		ExcludedDirs:  BuildExcludeSet(false, nil),
+		SupportedOnly: false,
+	}
+
+	tree, err := BuildTree(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("BuildTree returned error: %v", err)
+	}
+
+	if len(tree.Children) != 5 {
+		t.Fatalf("expected 5 direct children, got %d", len(tree.Children))
+	}
+
+	got := make([]string, 0, len(tree.Children))
+	for _, child := range tree.Children {
+		got = append(got, child.Name)
+	}
+
+	expected := []string{"adir", "zdir", "A.go", "b.py", "c.txt"}
+	for idx := range expected {
+		if got[idx] != expected[idx] {
+			t.Fatalf("unexpected child order at index %d: got %q, expected %q", idx, got[idx], expected[idx])
+		}
+	}
+}
+
 func collectFileNames(node *TreeNode) []string {
 	if node == nil {
 		return nil

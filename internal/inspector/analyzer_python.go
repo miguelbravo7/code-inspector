@@ -7,9 +7,9 @@ import (
 )
 
 var (
-	pyImportRe   = regexp.MustCompile(`^\s*(?:from\s+[A-Za-z0-9_\.]+\s+import\s+.+|import\s+.+)$`)
-	pyFunctionRe = regexp.MustCompile(`^\s*(?:async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
-	pyAssignRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*(?::[^=]+)?=`)
+	pyImportRe         = regexp.MustCompile(`^\s*(?:from\s+[A-Za-z0-9_\.]+\s+import\s+.+|import\s+.+)$`)
+	pyFunctionRe       = regexp.MustCompile(`^\s*(?:async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	pyIdentifierNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 type pythonStripState struct {
@@ -54,17 +54,360 @@ func analyzePythonSource(source []byte) (*FileMetrics, error) {
 			})
 		}
 
-		if match := pyAssignRe.FindStringSubmatch(trimmed); len(match) == 2 {
-			for _, name := range strings.Split(match[1], ",") {
-				candidate := strings.TrimSpace(name)
-				if candidate != "" && candidate != "_" {
-					metrics.VariableCount++
-				}
+		metrics.VariableCount += countPythonAssignedNames(trimmed)
+	}
+
+	return metrics, nil
+}
+
+func countPythonAssignedNames(line string) int {
+	targets := splitPythonAssignmentTargets(line)
+	if len(targets) == 0 {
+		return 0
+	}
+
+	count := 0
+	for _, target := range targets {
+		count += len(parsePythonAssignmentTargetNames(target))
+	}
+	return count
+}
+
+func splitPythonAssignmentTargets(line string) []string {
+	if line == "" {
+		return nil
+	}
+
+	targets := make([]string, 0, 2)
+	start := 0
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+
+		if ch == '\\' {
+			i++
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case '=':
+			if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
+				continue
+			}
+			if !isSimplePythonAssignmentOperator(line, i) {
+				continue
+			}
+
+			target := strings.TrimSpace(line[start:i])
+			if target == "" {
+				return nil
+			}
+			targets = append(targets, target)
+			start = i + 1
+		}
+	}
+
+	if len(targets) == 0 {
+		return nil
+	}
+
+	return targets
+}
+
+func isSimplePythonAssignmentOperator(line string, index int) bool {
+	var prev byte
+	if index > 0 {
+		prev = line[index-1]
+	}
+	var next byte
+	if index+1 < len(line) {
+		next = line[index+1]
+	}
+
+	if prev == '=' || prev == '!' || prev == '<' || prev == '>' || prev == ':' || next == '=' {
+		return false
+	}
+
+	if prevSig, ok := previousNonSpaceByte(line, index-1); ok {
+		switch prevSig {
+		case '+', '-', '*', '/', '%', '&', '|', '^', '@':
+			return false
+		}
+	}
+
+	return true
+}
+
+func parsePythonAssignmentTargetNames(target string) []string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+
+	target = unwrapPythonGrouping(target)
+	parts := splitPythonTopLevel(target, ',')
+	if len(parts) > 1 {
+		names := make([]string, 0)
+		for _, part := range parts {
+			names = append(names, parsePythonAssignmentTargetNames(part)...)
+		}
+		return names
+	}
+
+	target = strings.TrimSpace(stripPythonTopLevelAnnotation(target))
+	target = strings.TrimLeft(target, "*")
+	target = strings.TrimSpace(target)
+	target = unwrapPythonGrouping(target)
+
+	if target == "" {
+		return nil
+	}
+	if strings.ContainsAny(target, ".[]{}()") {
+		return nil
+	}
+	if !isPythonIdentifierName(target) || target == "_" {
+		return nil
+	}
+
+	return []string{target}
+}
+
+func splitPythonTopLevel(input string, delimiter byte) []string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return nil
+	}
+
+	parts := make([]string, 0, 2)
+	start := 0
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(input); i++ {
+		ch := input[i]
+
+		if ch == '\\' {
+			i++
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case delimiter:
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				parts = append(parts, strings.TrimSpace(input[start:i]))
+				start = i + 1
 			}
 		}
 	}
 
-	return metrics, nil
+	if start < len(input) {
+		parts = append(parts, strings.TrimSpace(input[start:]))
+	}
+
+	return parts
+}
+
+func stripPythonTopLevelAnnotation(target string) string {
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(target); i++ {
+		ch := target[i]
+
+		if ch == '\\' {
+			i++
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+
+		switch ch {
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case ':':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				return target[:i]
+			}
+		}
+	}
+
+	return target
+}
+
+func unwrapPythonGrouping(target string) string {
+	trimmed := strings.TrimSpace(target)
+	for len(trimmed) >= 2 {
+		if trimmed[0] == '(' && trimmed[len(trimmed)-1] == ')' {
+			if !hasBalancedOuterGrouping(trimmed, '(', ')') {
+				break
+			}
+			trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			continue
+		}
+		if trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']' {
+			if !hasBalancedOuterGrouping(trimmed, '[', ']') {
+				break
+			}
+			trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			continue
+		}
+		break
+	}
+	return trimmed
+}
+
+func hasBalancedOuterGrouping(input string, open, close byte) bool {
+	if len(input) < 2 || input[0] != open || input[len(input)-1] != close {
+		return false
+	}
+
+	depth := 0
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(input); i++ {
+		ch := input[i]
+
+		if ch == '\\' {
+			i++
+			continue
+		}
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+
+		if ch == open {
+			depth++
+			continue
+		}
+		if ch == close {
+			depth--
+			if depth == 0 && i != len(input)-1 {
+				return false
+			}
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+
+	return depth == 0
+}
+
+func previousNonSpaceByte(input string, index int) (byte, bool) {
+	for i := index; i >= 0; i-- {
+		if input[i] == ' ' || input[i] == '\t' {
+			continue
+		}
+		return input[i], true
+	}
+	return 0, false
+}
+
+func isPythonIdentifierName(value string) bool {
+	return pyIdentifierNameRe.MatchString(value)
 }
 
 func estimatePythonFunctionLineCount(lines []string, startLine int) int {

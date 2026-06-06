@@ -74,8 +74,9 @@ func analyzeJavaScriptLikeSource(source []byte, language string) (*FileMetrics, 
 				pendingImport = true
 			}
 		}
-		metrics.ImportCount += countRegexMatches(jsDynamicImportRe, trimmed)
-		metrics.ImportCount += countRegexMatches(jsRequireRe, trimmed)
+		importScanLine := stripJSStringLiterals(trimmed)
+		metrics.ImportCount += countRegexMatches(jsDynamicImportRe, importScanLine)
+		metrics.ImportCount += countRegexMatches(jsRequireRe, importScanLine)
 
 		if match := jsVarDeclRe.FindStringSubmatch(trimmed); len(match) == 2 {
 			declarators := splitTopLevelComma(stripTrailingSemicolon(match[1]))
@@ -472,6 +473,80 @@ func stripJSComments(line string, inBlockComment *bool) string {
 			inDouble = !inDouble
 		} else if ch == '`' && !inSingle && !inDouble {
 			inBacktick = !inBacktick
+		}
+
+		out.WriteByte(ch)
+	}
+
+	return out.String()
+}
+
+func stripJSStringLiterals(line string) string {
+	if line == "" {
+		return ""
+	}
+
+	var out strings.Builder
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+
+		if ch == '\\' {
+			if inSingle || inDouble || inBacktick {
+				out.WriteByte(' ')
+				if i+1 < len(line) {
+					i++
+					out.WriteByte(' ')
+				}
+				continue
+			}
+			out.WriteByte(ch)
+			if i+1 < len(line) {
+				i++
+				out.WriteByte(line[i])
+			}
+			continue
+		}
+
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+			}
+			out.WriteByte(' ')
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+			}
+			out.WriteByte(' ')
+			continue
+		}
+		if inBacktick {
+			if ch == '`' {
+				inBacktick = false
+			}
+			out.WriteByte(' ')
+			continue
+		}
+
+		if ch == '\'' {
+			inSingle = true
+			out.WriteByte(' ')
+			continue
+		}
+		if ch == '"' {
+			inDouble = true
+			out.WriteByte(' ')
+			continue
+		}
+		if ch == '`' {
+			inBacktick = true
+			out.WriteByte(' ')
+			continue
 		}
 
 		out.WriteByte(ch)

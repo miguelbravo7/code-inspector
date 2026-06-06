@@ -162,6 +162,55 @@ class Service {
 	}
 }
 
+func TestAnalyzePythonSourceAssignmentParsingEdgeCases(t *testing.T) {
+	source := []byte(`import os
+
+a: int = 1
+left, (middle, right) = (1, (2, 3))
+first = second = 4
+obj.value = 5
+items[0] = 6
+if first == second:
+	pass
+if (tmp := 7):
+	pass
+name += 1
+`)
+
+	metrics, err := analyzePythonSource(source)
+	if err != nil {
+		t.Fatalf("analyzePythonSource returned error: %v", err)
+	}
+
+	if metrics.ImportCount != 1 {
+		t.Fatalf("expected 1 import, got %d", metrics.ImportCount)
+	}
+	if metrics.VariableCount != 6 {
+		t.Fatalf("expected 6 variable definitions, got %d", metrics.VariableCount)
+	}
+}
+
+func TestAnalyzeJavaScriptLikeSourceIgnoresImportPatternsInStrings(t *testing.T) {
+	source := []byte(`const text = "import('fake')";
+const msg = 'require("ghost")';
+const tpl = ` + "`" + `import("ghost")` + "`" + `;
+const real = require("path");
+
+async function load() {
+	return import("./module.js");
+}
+`)
+
+	metrics, err := analyzeJavaScriptLikeSource(source, "typescript")
+	if err != nil {
+		t.Fatalf("analyzeJavaScriptLikeSource returned error: %v", err)
+	}
+
+	if metrics.ImportCount != 2 {
+		t.Fatalf("expected 2 imports, got %d", metrics.ImportCount)
+	}
+}
+
 func TestSortFunctionsOrdersByLineThenNameThenSignature(t *testing.T) {
 	functions := []FunctionInfo{
 		{Name: "zeta", Signature: "(z int)", Line: 10},
