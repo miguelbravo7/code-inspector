@@ -32,6 +32,26 @@ go run ./cmd/code-inspector -- ./path/to/directory
 - `-supported-only`: include only supported file types in the output tree
 - `-format=tree|json`: choose human-readable tree output or JSON output
 
+## Benchmarks
+
+Run all inspector benchmarks:
+
+```bash
+go test ./internal/inspector -run ^$ -bench . -benchmem
+```
+
+Compare traversal concurrency against sequential baseline:
+
+```bash
+go test ./internal/inspector -run ^$ -bench BuildTreeTraversal -benchmem
+```
+
+Run analyzer hotspot benchmarks:
+
+```bash
+go test ./internal/inspector -run ^$ -bench AnalyzeHotspots -benchmem
+```
+
 ## Example
 
 ```text
