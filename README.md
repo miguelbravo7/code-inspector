@@ -1,6 +1,6 @@
 # Code Inspector
 
-A standalone root-level CLI utility to inspect source trees and print code metrics as an ASCII file tree.
+A standalone root-level CLI utility to inspect source trees and print code metrics as a Unicode file tree.
 
 ## Supported Languages
 

@@ -161,3 +161,27 @@ class Service {
 		t.Fatalf("expected class method start to have 1 line, got %d", startFn.LineCount)
 	}
 }
+
+func TestSortFunctionsOrdersByLineThenNameThenSignature(t *testing.T) {
+	functions := []FunctionInfo{
+		{Name: "zeta", Signature: "(z int)", Line: 10},
+		{Name: "alpha", Signature: "(y int)", Line: 10},
+		{Name: "beta", Signature: "()", Line: 2},
+		{Name: "alpha", Signature: "(a int)", Line: 10},
+	}
+
+	sortFunctions(functions)
+
+	expected := []FunctionInfo{
+		{Name: "beta", Signature: "()", Line: 2},
+		{Name: "alpha", Signature: "(a int)", Line: 10},
+		{Name: "alpha", Signature: "(y int)", Line: 10},
+		{Name: "zeta", Signature: "(z int)", Line: 10},
+	}
+
+	for idx := range expected {
+		if functions[idx].Line != expected[idx].Line || functions[idx].Name != expected[idx].Name || functions[idx].Signature != expected[idx].Signature {
+			t.Fatalf("unexpected function order at index %d: got %+v, expected %+v", idx, functions[idx], expected[idx])
+		}
+	}
+}

@@ -137,9 +137,10 @@ func padRightRunes(input string, width int) string {
 }
 
 func summarizeWarning(message string) string {
-	const maxLen = 80
-	if len(message) <= maxLen {
+	const maxRunes = 80
+	if utf8.RuneCountInString(message) <= maxRunes {
 		return message
 	}
-	return message[:maxLen-3] + "..."
+	runes := []rune(message)
+	return string(runes[:maxRunes-3]) + "..."
 }

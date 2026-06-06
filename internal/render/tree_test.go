@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"code-inspector/internal/inspector"
 )
@@ -84,5 +85,20 @@ func TestPrintTreeAlignsFunctionMetadataColumns(t *testing.T) {
 
 	if idx1 != idx2 {
 		t.Fatalf("expected aligned function metadata columns, got indexes %d and %d\noutput:\n%s", idx1, idx2, output.String())
+	}
+}
+
+func TestSummarizeWarningPreservesRunes(t *testing.T) {
+	message := strings.Repeat("á", 100)
+	got := summarizeWarning(message)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("summarizeWarning returned invalid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", got)
+	}
+	if utf8.RuneCountInString(got) != 80 {
+		t.Fatalf("expected 80 runes after truncation, got %d", utf8.RuneCountInString(got))
 	}
 }

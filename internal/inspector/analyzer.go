@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+type analyzerFunc func(source []byte) (*FileMetrics, error)
+
 var supportedExtensions = map[string]string{
 	".js":  "javascript",
 	".mjs": "javascript",
@@ -18,6 +20,14 @@ var supportedExtensions = map[string]string{
 	".tsx": "typescript",
 	".py":  "python",
 	".go":  "go",
+}
+
+var languageAnalyzers = map[string]analyzerFunc{
+	"go":         analyzeGoSource,
+	"python":     analyzePythonSource,
+	"javascript": func(source []byte) (*FileMetrics, error) { return analyzeJavaScriptLikeSource(source, "javascript") },
+	"jsx":        func(source []byte) (*FileMetrics, error) { return analyzeJavaScriptLikeSource(source, "jsx") },
+	"typescript": func(source []byte) (*FileMetrics, error) { return analyzeJavaScriptLikeSource(source, "typescript") },
 }
 
 // AnalyzeFile extracts metrics for supported source files.
@@ -34,36 +44,42 @@ func AnalyzeFile(path string) (*FileMetrics, bool, error) {
 		return nil, true, fmt.Errorf("read file %q: %w", path, err)
 	}
 
-	var metrics *FileMetrics
-	switch language {
-	case "go":
-		metrics, err = analyzeGoSource(source)
-	case "python":
-		metrics, err = analyzePythonSource(source)
-	case "javascript", "jsx", "typescript":
-		metrics, err = analyzeJavaScriptLikeSource(source, language)
-	default:
+	analyzer, found := languageAnalyzers[language]
+	if !found {
 		return nil, false, nil
 	}
+
+	metrics, err := analyzer(source)
 	if metrics == nil {
 		metrics = &FileMetrics{Language: language}
 	}
 	metrics.Language = language
 	metrics.LineCount = countPhysicalLines(source)
-
-	if len(metrics.Functions) > 1 {
-		sort.SliceStable(metrics.Functions, func(i, j int) bool {
-			if metrics.Functions[i].Line == metrics.Functions[j].Line {
-				return metrics.Functions[i].Name < metrics.Functions[j].Name
-			}
-			return metrics.Functions[i].Line < metrics.Functions[j].Line
-		})
-	}
+	sortFunctions(metrics.Functions)
 
 	if err != nil {
 		return metrics, true, err
 	}
 	return metrics, true, nil
+}
+
+func sortFunctions(functions []FunctionInfo) {
+	if len(functions) < 2 {
+		return
+	}
+
+	sort.SliceStable(functions, func(i, j int) bool {
+		left := functions[i]
+		right := functions[j]
+
+		if left.Line != right.Line {
+			return left.Line < right.Line
+		}
+		if left.Name != right.Name {
+			return left.Name < right.Name
+		}
+		return left.Signature < right.Signature
+	})
 }
 
 func countPhysicalLines(source []byte) int {
