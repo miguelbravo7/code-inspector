@@ -17,7 +17,7 @@ func main() {
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
-	var excludeCSV string
+	var excludes excludePatternFlag
 	var noDefaultExcludes bool
 	var supportedOnly bool
 	var outputFormat string
@@ -25,7 +25,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	flags := flag.NewFlagSet("code-inspector", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.StringVar(&excludeCSV, "exclude", "", "Comma-separated directory names to exclude")
+	flags.Var(&excludes, "exclude", "Exclude file or directory names/patterns (repeatable, e.g. -exclude=*_test.go -exclude=sqlc)")
 	flags.BoolVar(&noDefaultExcludes, "no-default-excludes", false, "Disable built-in excluded directory names")
 	flags.BoolVar(&supportedOnly, "supported-only", false, "Show only supported source files")
 	flags.StringVar(&outputFormat, "format", "tree", "Output format: tree or json")
@@ -57,13 +57,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
-	var extras []string
-	if trimmed := strings.TrimSpace(excludeCSV); trimmed != "" {
-		extras = strings.Split(trimmed, ",")
-	}
+	excludeValues := []string(excludes)
 
 	cfg := inspector.Config{
-		ExcludedDirs:    inspector.BuildExcludeSet(!noDefaultExcludes, extras),
+		ExcludedDirs:    inspector.BuildExcludeSet(!noDefaultExcludes, excludeValues),
+		ExcludePatterns: append([]string(nil), excludeValues...),
 		SupportedOnly:   supportedOnly,
 		AnalyzerWorkers: analyzerWorkers,
 	}
@@ -93,4 +91,24 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	return 0
+}
+
+type excludePatternFlag []string
+
+func (f *excludePatternFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *excludePatternFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		*f = append(*f, trimmed)
+	}
+	return nil
 }

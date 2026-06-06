@@ -119,6 +119,42 @@ func TestBuildTreeWorkersOneMatchesAutoResults(t *testing.T) {
 	}
 }
 
+func TestBuildTreeExcludePatternsOmitFilesAndDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mustWriteFile(t, filepath.Join(tmpDir, "keep.go"), "package main\n")
+	mustWriteFile(t, filepath.Join(tmpDir, "worker_test.go"), "package main\n")
+	mustWriteFile(t, filepath.Join(tmpDir, "sqlc", "generated.go"), "package sqlc\n")
+
+	cfg := Config{
+		ExcludedDirs:    BuildExcludeSet(false, nil),
+		ExcludePatterns: []string{"*_test.go", "sqlc"},
+		SupportedOnly:   false,
+	}
+
+	tree, err := BuildTree(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("BuildTree returned error: %v", err)
+	}
+
+	files := collectFileNames(tree)
+	sort.Strings(files)
+
+	expected := []string{"keep.go"}
+	if len(files) != len(expected) {
+		t.Fatalf("expected %d files, got %d (%v)", len(expected), len(files), files)
+	}
+	for idx, name := range expected {
+		if files[idx] != name {
+			t.Fatalf("expected file %q at position %d, got %q", name, idx, files[idx])
+		}
+	}
+
+	if containsNodeName(tree, "sqlc") {
+		t.Fatalf("expected sqlc directory to be excluded")
+	}
+}
+
 func collectFileNames(node *TreeNode) []string {
 	if node == nil {
 		return nil
@@ -131,6 +167,21 @@ func collectFileNames(node *TreeNode) []string {
 		result = append(result, collectFileNames(child)...)
 	}
 	return result
+}
+
+func containsNodeName(node *TreeNode, name string) bool {
+	if node == nil {
+		return false
+	}
+	if node.Name == name {
+		return true
+	}
+	for _, child := range node.Children {
+		if containsNodeName(child, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func mustWriteFile(t *testing.T, path, content string) {

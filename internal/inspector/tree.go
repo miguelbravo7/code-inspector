@@ -3,6 +3,7 @@ package inspector
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -88,7 +89,7 @@ func walkTree(parent *TreeNode, cfg Config) error {
 		fullPath := filepath.Join(parent.Path, name)
 
 		if entry.IsDir() {
-			if isExcludedDir(name, cfg.ExcludedDirs) {
+			if isExcludedDir(name, cfg.ExcludedDirs) || isExcludedPath(name, fullPath, cfg.ExcludePatterns) {
 				continue
 			}
 			dirNode := &TreeNode{Name: name, Path: fullPath, IsDir: true}
@@ -96,6 +97,10 @@ func walkTree(parent *TreeNode, cfg Config) error {
 				dirNode.Warning = err.Error()
 			}
 			parent.Children = append(parent.Children, dirNode)
+			continue
+		}
+
+		if isExcludedPath(name, fullPath, cfg.ExcludePatterns) {
 			continue
 		}
 
@@ -238,4 +243,49 @@ func isExcludedDir(name string, excluded map[string]struct{}) bool {
 	}
 	_, ok := excluded[strings.ToLower(strings.TrimSpace(name))]
 	return ok
+}
+
+func isExcludedPath(name string, fullPath string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+	normalizedPath := strings.ToLower(filepath.ToSlash(strings.TrimSpace(fullPath)))
+
+	for _, rawPattern := range patterns {
+		pattern := strings.ToLower(strings.TrimSpace(rawPattern))
+		if pattern == "" {
+			continue
+		}
+
+		if pattern == normalizedName {
+			return true
+		}
+		if !strings.ContainsAny(pattern, "*?[") && strings.HasSuffix(normalizedPath, "/"+pattern) {
+			return true
+		}
+		if matchesExcludePattern(pattern, normalizedName) || matchesExcludePattern(pattern, normalizedPath) {
+			return true
+		}
+
+		relativeCandidate := normalizedPath
+		for {
+			nextSlash := strings.Index(relativeCandidate, "/")
+			if nextSlash < 0 {
+				break
+			}
+			relativeCandidate = relativeCandidate[nextSlash+1:]
+			if matchesExcludePattern(pattern, relativeCandidate) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func matchesExcludePattern(pattern string, value string) bool {
+	matched, err := path.Match(pattern, value)
+	return err == nil && matched
 }

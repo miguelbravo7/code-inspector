@@ -37,8 +37,9 @@ type TreeNode struct {
 
 // Config controls traversal and filtering behavior.
 type Config struct {
-	ExcludedDirs  map[string]struct{}
-	SupportedOnly bool
+	ExcludedDirs    map[string]struct{}
+	ExcludePatterns []string
+	SupportedOnly   bool
 	// AnalyzerWorkers controls per-directory file analysis workers.
 	// 0 uses automatic sizing, 1 forces sequential file analysis.
 	AnalyzerWorkers int

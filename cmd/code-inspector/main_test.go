@@ -62,6 +62,32 @@ func TestRunWorkersOneSequentialMode(t *testing.T) {
 	}
 }
 
+func TestRunRepeatableExcludePatterns(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "keep.go"), "package main\n")
+	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "worker_test.go"), "package main\n")
+	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "sqlc", "generated.go"), "package sqlc\n")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-exclude=*_test.go", "-exclude=sqlc", tmpDir}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "keep.go") {
+		t.Fatalf("expected output to include keep.go, got: %s", out)
+	}
+	if strings.Contains(out, "worker_test.go") {
+		t.Fatalf("expected output to exclude *_test.go files, got: %s", out)
+	}
+	if strings.Contains(out, "sqlc/") {
+		t.Fatalf("expected output to exclude sqlc directory, got: %s", out)
+	}
+}
+
 func TestRunDefaultWorkersMatchesExplicitWorkersOne(t *testing.T) {
 	tmpDir := t.TempDir()
 	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "main.go"), "package main\nfunc main() {}\n")
