@@ -29,7 +29,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.BoolVar(&noDefaultExcludes, "no-default-excludes", false, "Disable built-in excluded directory names")
 	flags.BoolVar(&supportedOnly, "supported-only", false, "Show only supported source files")
 	flags.StringVar(&outputFormat, "format", "tree", "Output format: tree or json")
-	flags.IntVar(&analyzerWorkers, "workers", 0, "File analysis workers per directory (0 = auto, 1 = sequential)")
+	flags.IntVar(&analyzerWorkers, "workers", 1, "File analysis workers per directory (default 1 = sequential, 0 = auto)")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: code-inspector [flags] <directory>")
 		fmt.Fprintln(stderr)

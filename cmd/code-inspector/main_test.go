@@ -62,6 +62,29 @@ func TestRunWorkersOneSequentialMode(t *testing.T) {
 	}
 }
 
+func TestRunDefaultWorkersMatchesExplicitWorkersOne(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "main.go"), "package main\nfunc main() {}\n")
+
+	var defaultStdout bytes.Buffer
+	var defaultStderr bytes.Buffer
+	defaultExitCode := run([]string{tmpDir}, &defaultStdout, &defaultStderr)
+	if defaultExitCode != 0 {
+		t.Fatalf("expected default run exit code 0, got %d (stderr: %s)", defaultExitCode, defaultStderr.String())
+	}
+
+	var explicitStdout bytes.Buffer
+	var explicitStderr bytes.Buffer
+	explicitExitCode := run([]string{"-workers=1", tmpDir}, &explicitStdout, &explicitStderr)
+	if explicitExitCode != 0 {
+		t.Fatalf("expected explicit workers=1 exit code 0, got %d (stderr: %s)", explicitExitCode, explicitStderr.String())
+	}
+
+	if defaultStdout.String() != explicitStdout.String() {
+		t.Fatalf("expected default output to match explicit workers=1 output\ndefault:\n%s\nexplicit:\n%s", defaultStdout.String(), explicitStdout.String())
+	}
+}
+
 func TestRunUnsupportedFormatReturnsUsageError(t *testing.T) {
 	tmpDir := t.TempDir()
 	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "main.go"), "package main\nfunc main() {}\n")
