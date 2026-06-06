@@ -81,7 +81,7 @@ func walkTree(parent *TreeNode, cfg Config) error {
 		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
 	})
 
-	analyzedFiles := analyzeFilesInDirectory(parent.Path, entries)
+	analyzedFiles := analyzeFilesInDirectory(parent.Path, entries, cfg.AnalyzerWorkers)
 
 	for idx, entry := range entries {
 		name := entry.Name()
@@ -123,7 +123,7 @@ type indexedFileAnalysisResult struct {
 	result fileAnalysisResult
 }
 
-func analyzeFilesInDirectory(parentPath string, entries []os.DirEntry) map[int]fileAnalysisResult {
+func analyzeFilesInDirectory(parentPath string, entries []os.DirEntry, configuredWorkerCount int) map[int]fileAnalysisResult {
 	fileIndexes := make([]int, 0, len(entries))
 	for idx, entry := range entries {
 		if entry.IsDir() {
@@ -136,12 +136,13 @@ func analyzeFilesInDirectory(parentPath string, entries []os.DirEntry) map[int]f
 		return nil
 	}
 
-	workerCount := runtime.GOMAXPROCS(0)
-	if workerCount < 1 {
-		workerCount = 1
-	}
-	if workerCount > len(fileIndexes) {
-		workerCount = len(fileIndexes)
+	workerCount := normalizeWorkerCount(len(fileIndexes), configuredWorkerCount)
+	if workerCount == 1 {
+		analyzed := make(map[int]fileAnalysisResult, len(fileIndexes))
+		for _, idx := range fileIndexes {
+			analyzed[idx] = analyzeFileEntry(parentPath, entries[idx])
+		}
+		return analyzed
 	}
 
 	tasks := make(chan int, len(fileIndexes))
@@ -153,25 +154,9 @@ func analyzeFilesInDirectory(parentPath string, entries []os.DirEntry) map[int]f
 		go func() {
 			defer wg.Done()
 			for idx := range tasks {
-				entry := entries[idx]
-				name := entry.Name()
-				fullPath := filepath.Join(parentPath, name)
-
-				fileNode := &TreeNode{Name: name, Path: fullPath, IsDir: false}
-				metrics, supported, analyzeErr := AnalyzeFile(fullPath)
-				if supported {
-					fileNode.Metrics = metrics
-				}
-				if analyzeErr != nil {
-					fileNode.Warning = analyzeErr.Error()
-				}
-
 				results <- indexedFileAnalysisResult{
-					index: idx,
-					result: fileAnalysisResult{
-						node:      fileNode,
-						supported: supported,
-					},
+					index:  idx,
+					result: analyzeFileEntry(parentPath, entries[idx]),
 				}
 			}
 		}()
@@ -191,6 +176,40 @@ func analyzeFilesInDirectory(parentPath string, entries []os.DirEntry) map[int]f
 	}
 
 	return analyzed
+}
+
+func normalizeWorkerCount(fileCount int, configuredWorkerCount int) int {
+	if fileCount <= 0 {
+		return 0
+	}
+
+	workerCount := configuredWorkerCount
+	if workerCount <= 0 {
+		workerCount = runtime.GOMAXPROCS(0)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > fileCount {
+		workerCount = fileCount
+	}
+	return workerCount
+}
+
+func analyzeFileEntry(parentPath string, entry os.DirEntry) fileAnalysisResult {
+	name := entry.Name()
+	fullPath := filepath.Join(parentPath, name)
+
+	fileNode := &TreeNode{Name: name, Path: fullPath, IsDir: false}
+	metrics, supported, analyzeErr := AnalyzeFile(fullPath)
+	if supported {
+		fileNode.Metrics = metrics
+	}
+	if analyzeErr != nil {
+		fileNode.Warning = analyzeErr.Error()
+	}
+
+	return fileAnalysisResult{node: fileNode, supported: supported}
 }
 
 func pruneUnsupportedDirectories(node *TreeNode) bool {

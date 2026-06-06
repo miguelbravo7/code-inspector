@@ -46,6 +46,22 @@ func TestRunJSONFormat(t *testing.T) {
 	}
 }
 
+func TestRunWorkersOneSequentialMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "main.go"), "package main\nfunc main() {}\n")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-workers=1", tmpDir}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "main.go") {
+		t.Fatalf("expected tree output to include main.go, got: %s", stdout.String())
+	}
+}
+
 func TestRunUnsupportedFormatReturnsUsageError(t *testing.T) {
 	tmpDir := t.TempDir()
 	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "main.go"), "package main\nfunc main() {}\n")
@@ -59,6 +75,22 @@ func TestRunUnsupportedFormatReturnsUsageError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unsupported format") {
 		t.Fatalf("expected unsupported format error, got: %s", stderr.String())
+	}
+}
+
+func TestRunNegativeWorkersReturnsUsageError(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustWriteCmdTestFile(t, filepath.Join(tmpDir, "main.go"), "package main\nfunc main() {}\n")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-workers=-1", tmpDir}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "workers must be >= 0") {
+		t.Fatalf("expected workers validation error, got: %s", stderr.String())
 	}
 }
 

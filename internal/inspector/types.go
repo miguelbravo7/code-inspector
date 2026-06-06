@@ -39,4 +39,7 @@ type TreeNode struct {
 type Config struct {
 	ExcludedDirs  map[string]struct{}
 	SupportedOnly bool
+	// AnalyzerWorkers controls per-directory file analysis workers.
+	// 0 uses automatic sizing, 1 forces sequential file analysis.
+	AnalyzerWorkers int
 }

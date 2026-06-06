@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -13,16 +12,18 @@ const defaultTraversalFixtureFileCount = 1600
 
 func BenchmarkBuildTreeTraversal(b *testing.B) {
 	rootPath := createTraversalBenchmarkFixture(b)
-	cfg := Config{
+	concurrentCfg := Config{
 		ExcludedDirs:  BuildExcludeSet(false, nil),
 		SupportedOnly: true,
 	}
+	sequentialCfg := concurrentCfg
+	sequentialCfg.AnalyzerWorkers = 1
 
 	b.Run("concurrent", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			tree, err := BuildTree(rootPath, cfg)
+			tree, err := BuildTree(rootPath, concurrentCfg)
 			if err != nil {
 				b.Fatalf("BuildTree returned error: %v", err)
 			}
@@ -36,12 +37,12 @@ func BenchmarkBuildTreeTraversal(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			tree, err := buildTreeSequentialBenchmark(rootPath, cfg)
+			tree, err := BuildTree(rootPath, sequentialCfg)
 			if err != nil {
-				b.Fatalf("buildTreeSequentialBenchmark returned error: %v", err)
+				b.Fatalf("BuildTree(workers=1) returned error: %v", err)
 			}
 			if tree == nil {
-				b.Fatalf("buildTreeSequentialBenchmark returned nil tree")
+				b.Fatalf("BuildTree(workers=1) returned nil tree")
 			}
 		}
 	})
@@ -59,16 +60,18 @@ func BenchmarkBuildTreeTraversalMatrix(b *testing.B) {
 
 			b.Run(caseName, func(b *testing.B) {
 				rootPath := createTraversalBenchmarkFixtureWithFileCount(b, fileCount)
-				cfg := Config{
+				concurrentCfg := Config{
 					ExcludedDirs:  BuildExcludeSet(false, nil),
 					SupportedOnly: supportedOnly,
 				}
+				sequentialCfg := concurrentCfg
+				sequentialCfg.AnalyzerWorkers = 1
 
 				b.Run("concurrent", func(b *testing.B) {
 					b.ReportAllocs()
 					b.ResetTimer()
 					for i := 0; i < b.N; i++ {
-						tree, err := BuildTree(rootPath, cfg)
+						tree, err := BuildTree(rootPath, concurrentCfg)
 						if err != nil {
 							b.Fatalf("BuildTree returned error: %v", err)
 						}
@@ -82,12 +85,12 @@ func BenchmarkBuildTreeTraversalMatrix(b *testing.B) {
 					b.ReportAllocs()
 					b.ResetTimer()
 					for i := 0; i < b.N; i++ {
-						tree, err := buildTreeSequentialBenchmark(rootPath, cfg)
+						tree, err := BuildTree(rootPath, sequentialCfg)
 						if err != nil {
-							b.Fatalf("buildTreeSequentialBenchmark returned error: %v", err)
+							b.Fatalf("BuildTree(workers=1) returned error: %v", err)
 						}
 						if tree == nil {
-							b.Fatalf("buildTreeSequentialBenchmark returned nil tree")
+							b.Fatalf("BuildTree(workers=1) returned nil tree")
 						}
 					}
 				})
@@ -169,77 +172,4 @@ func traversalFixtureFile(fileIdx int, dirIdx int) (string, string) {
 		name := fmt.Sprintf("notes_%03d.txt", fileIdx)
 		return name, strings.Repeat("not source code\n", 4)
 	}
-}
-
-func buildTreeSequentialBenchmark(rootPath string, cfg Config) (*TreeNode, error) {
-	absRoot, err := filepath.Abs(rootPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve path %q: %w", rootPath, err)
-	}
-
-	info, err := os.Stat(absRoot)
-	if err != nil {
-		return nil, fmt.Errorf("stat path %q: %w", absRoot, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("path %q is not a directory", absRoot)
-	}
-
-	root := &TreeNode{Name: info.Name(), Path: absRoot, IsDir: true}
-	if err := walkTreeSequentialBenchmark(root, cfg); err != nil {
-		return nil, err
-	}
-	if cfg.SupportedOnly {
-		pruneUnsupportedDirectories(root)
-	}
-	return root, nil
-}
-
-func walkTreeSequentialBenchmark(parent *TreeNode, cfg Config) error {
-	entries, err := os.ReadDir(parent.Path)
-	if err != nil {
-		return fmt.Errorf("read directory %q: %w", parent.Path, err)
-	}
-
-	sort.SliceStable(entries, func(i, j int) bool {
-		iDir := entries[i].IsDir()
-		jDir := entries[j].IsDir()
-		if iDir != jDir {
-			return iDir
-		}
-		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
-	})
-
-	for _, entry := range entries {
-		name := entry.Name()
-		fullPath := filepath.Join(parent.Path, name)
-
-		if entry.IsDir() {
-			if isExcludedDir(name, cfg.ExcludedDirs) {
-				continue
-			}
-			dirNode := &TreeNode{Name: name, Path: fullPath, IsDir: true}
-			if err := walkTreeSequentialBenchmark(dirNode, cfg); err != nil {
-				dirNode.Warning = err.Error()
-			}
-			parent.Children = append(parent.Children, dirNode)
-			continue
-		}
-
-		fileNode := &TreeNode{Name: name, Path: fullPath, IsDir: false}
-		metrics, supported, analyzeErr := AnalyzeFile(fullPath)
-		if supported {
-			fileNode.Metrics = metrics
-		}
-		if analyzeErr != nil {
-			fileNode.Warning = analyzeErr.Error()
-		}
-
-		if cfg.SupportedOnly && !supported {
-			continue
-		}
-		parent.Children = append(parent.Children, fileNode)
-	}
-
-	return nil
 }

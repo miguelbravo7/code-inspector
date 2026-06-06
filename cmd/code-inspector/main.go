@@ -21,6 +21,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var noDefaultExcludes bool
 	var supportedOnly bool
 	var outputFormat string
+	var analyzerWorkers int
 
 	flags := flag.NewFlagSet("code-inspector", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -28,6 +29,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.BoolVar(&noDefaultExcludes, "no-default-excludes", false, "Disable built-in excluded directory names")
 	flags.BoolVar(&supportedOnly, "supported-only", false, "Show only supported source files")
 	flags.StringVar(&outputFormat, "format", "tree", "Output format: tree or json")
+	flags.IntVar(&analyzerWorkers, "workers", 0, "File analysis workers per directory (0 = auto, 1 = sequential)")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: code-inspector [flags] <directory>")
 		fmt.Fprintln(stderr)
@@ -50,6 +52,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	targetPath := flags.Arg(0)
+	if analyzerWorkers < 0 {
+		fmt.Fprintf(stderr, "error: workers must be >= 0, got %d\n", analyzerWorkers)
+		return 2
+	}
 
 	var extras []string
 	if trimmed := strings.TrimSpace(excludeCSV); trimmed != "" {
@@ -57,8 +63,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	cfg := inspector.Config{
-		ExcludedDirs:  inspector.BuildExcludeSet(!noDefaultExcludes, extras),
-		SupportedOnly: supportedOnly,
+		ExcludedDirs:    inspector.BuildExcludeSet(!noDefaultExcludes, extras),
+		SupportedOnly:   supportedOnly,
+		AnalyzerWorkers: analyzerWorkers,
 	}
 
 	tree, err := inspector.BuildTree(targetPath, cfg)

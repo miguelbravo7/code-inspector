@@ -31,6 +31,7 @@ go run ./cmd/code-inspector -- ./path/to/directory
 - `-no-default-excludes`: disable defaults (`.git`, `node_modules`, `dist`, `build`, `out`, `vendor`)
 - `-supported-only`: include only supported file types in the output tree
 - `-format=tree|json`: choose human-readable tree output or JSON output
+- `-workers=N`: file-analysis workers per directory (`0` auto, `1` sequential)
 
 ## Benchmarks
 

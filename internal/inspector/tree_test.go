@@ -79,6 +79,46 @@ func TestBuildTreeDeterministicChildOrdering(t *testing.T) {
 	}
 }
 
+func TestBuildTreeWorkersOneMatchesAutoResults(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mustWriteFile(t, filepath.Join(tmpDir, "main.go"), "package main\nfunc main() {}\n")
+	mustWriteFile(t, filepath.Join(tmpDir, "worker.py"), "def run():\n    return 1\n")
+	mustWriteFile(t, filepath.Join(tmpDir, "notes.txt"), "plain text\n")
+	mustWriteFile(t, filepath.Join(tmpDir, "pkg", "service.ts"), "export const run = () => 1;\n")
+
+	baseCfg := Config{
+		ExcludedDirs:  BuildExcludeSet(false, nil),
+		SupportedOnly: false,
+	}
+
+	autoTree, err := BuildTree(tmpDir, baseCfg)
+	if err != nil {
+		t.Fatalf("BuildTree(auto) returned error: %v", err)
+	}
+
+	sequentialCfg := baseCfg
+	sequentialCfg.AnalyzerWorkers = 1
+	sequentialTree, err := BuildTree(tmpDir, sequentialCfg)
+	if err != nil {
+		t.Fatalf("BuildTree(workers=1) returned error: %v", err)
+	}
+
+	autoFiles := collectFileNames(autoTree)
+	sequentialFiles := collectFileNames(sequentialTree)
+	sort.Strings(autoFiles)
+	sort.Strings(sequentialFiles)
+
+	if len(autoFiles) != len(sequentialFiles) {
+		t.Fatalf("expected same file count between auto and workers=1, got %d and %d", len(autoFiles), len(sequentialFiles))
+	}
+	for idx := range autoFiles {
+		if autoFiles[idx] != sequentialFiles[idx] {
+			t.Fatalf("unexpected file mismatch at index %d: auto=%q workers=1=%q", idx, autoFiles[idx], sequentialFiles[idx])
+		}
+	}
+}
+
 func collectFileNames(node *TreeNode) []string {
 	if node == nil {
 		return nil
