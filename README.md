@@ -116,6 +116,16 @@ func init() {
 The CLI's bundled set is fixed at build time; `RegisterLanguage` is for programs
 that embed the `inspector` package (or a custom build of the CLI).
 
+## Claude Code skill
+
+This repo bundles a [Claude Code](https://claude.com/claude-code) skill at
+[`.claude/skills/code-hotspots`](.claude/skills/code-hotspots/SKILL.md) that
+drives the tool for a first-pass code-health review: it runs the inspector,
+detects and excludes generated code, finds the metrics that stand out for that
+codebase, and proposes prioritized, evidence-backed refactoring actions. It is
+available automatically when working in this repo; to use it anywhere, copy the
+`code-hotspots` directory into `~/.claude/skills/`.
+
 ## Metrics
 
 ### Per file
