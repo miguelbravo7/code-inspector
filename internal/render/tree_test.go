@@ -20,11 +20,12 @@ func TestPrintTreeRendersAsciiTreeWithFunctions(t *testing.T) {
 				Path:  "root/app.ts",
 				IsDir: false,
 				Metrics: &inspector.FileMetrics{
-					LineCount:     12,
-					CodeLines:     9,
-					ImportCount:   2,
-					VariableCount: 3,
-					Cyclomatic:    5,
+					LineCount:       12,
+					CodeLines:       9,
+					ImportCount:     2,
+					VariableCount:   3,
+					Cyclomatic:      5,
+					Maintainability: 72,
 					Functions: []inspector.FunctionInfo{
 						{Name: "boot", Signature: "()", Line: 4, LineCount: 3, Cyclomatic: 3, Cognitive: 2},
 					},
@@ -38,7 +39,7 @@ func TestPrintTreeRendersAsciiTreeWithFunctions(t *testing.T) {
 		t.Fatalf("PrintTree returned error: %v", err)
 	}
 
-	expected := "root/\n└── app.ts [lines:12 code:9 cyc:5 funcs:1]\n    └── fn: boot | () | line 4 | lines 3 | cyc 3 | cog 2\n"
+	expected := "root/\n└── app.ts [lines:12 code:9 cyc:5 mi:72 funcs:1]\n    └── fn: boot | () | line 4 | lines 3 | cyc 3 | cog 2\n"
 	if output.String() != expected {
 		t.Fatalf("unexpected tree output\nexpected:\n%s\nactual:\n%s", expected, output.String())
 	}

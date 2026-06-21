@@ -60,6 +60,17 @@ func PrintSummary(summary inspector.Summary, writer io.Writer) error {
 		}
 	}
 
+	if len(summary.LowestMaintainable) > 0 {
+		if err := w("\n  Lowest maintainability (0-100, higher is better):\n"); err != nil {
+			return err
+		}
+		for _, f := range summary.LowestMaintainable {
+			if err := w("    %-40s mi %-6.1f cyc %d\n", truncatePath(f.Path, 40), f.Maintainability, f.Cyclomatic); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 

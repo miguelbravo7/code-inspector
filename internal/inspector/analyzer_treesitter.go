@@ -2,6 +2,7 @@ package inspector
 
 import (
 	"context"
+	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/javascript"
@@ -30,6 +31,7 @@ type tsSpec struct {
 	functionName func(n *sitter.Node, src []byte) (name, signature string)
 	paramCount   func(n *sitter.Node) int
 	importDelta  func(n *sitter.Node, src []byte) int
+	importSpecs  func(n *sitter.Node, src []byte) []string
 	varBindings  func(n *sitter.Node, src []byte) int
 	decision     func(n *sitter.Node, src []byte) int // cyclomatic delta
 	cognitive    func(n *sitter.Node, src []byte) cogKind
@@ -56,15 +58,23 @@ func (a treeSitterAnalyzer) Analyze(source []byte) (*FileMetrics, error) {
 
 	metrics := &FileMetrics{Language: a.spec.language}
 	comments := make([]lineSpan, 0)
-	a.collect(tree.RootNode(), source, metrics, &comments)
+	fileHalstead := newHalstead()
+	a.collect(tree.RootNode(), source, metrics, &comments, fileHalstead)
 
 	metrics.CodeLines, metrics.CommentLines, metrics.BlankLines = lineClassification(source, comments)
+	metrics.Halstead = fileHalstead.metrics()
+
+	fileCyclomatic := 0
+	for _, fn := range metrics.Functions {
+		fileCyclomatic += fn.Cyclomatic
+	}
+	metrics.Maintainability = maintainabilityIndex(metrics.Halstead.Volume, fileCyclomatic, metrics.CodeLines)
 	return metrics, nil
 }
 
 // collect walks the whole tree once, accumulating file-level counts and
 // enumerating functions.
-func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMetrics, comments *[]lineSpan) {
+func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMetrics, comments *[]lineSpan, h *halsteadAccumulator) {
 	t := n.Type()
 
 	if t == a.spec.commentType {
@@ -77,7 +87,16 @@ func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMet
 		})
 	}
 
+	if tok, operand, ok := tsLeafToken(n, src); ok {
+		if operand {
+			h.addOperand(tok)
+		} else {
+			h.addOperator(tok)
+		}
+	}
+
 	metrics.ImportCount += a.spec.importDelta(n, src)
+	metrics.Imports = append(metrics.Imports, a.spec.importSpecs(n, src)...)
 	metrics.VariableCount += a.spec.varBindings(n, src)
 
 	// IsNamed guards against tokens that share a type name with a node kind
@@ -87,38 +106,71 @@ func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMet
 	}
 
 	for i := 0; i < int(n.ChildCount()); i++ {
-		a.collect(n.Child(i), src, metrics, comments)
+		a.collect(n.Child(i), src, metrics, comments, h)
 	}
+}
+
+// tsLeafToken classifies a leaf node as a Halstead operand or operator. Named
+// leaves (identifiers, literals) are operands keyed by their text; anonymous
+// leaves (punctuation, keywords) are operators keyed by their type. Comments and
+// non-leaf nodes are ignored.
+func tsLeafToken(n *sitter.Node, src []byte) (token string, operand bool, ok bool) {
+	if n.ChildCount() != 0 {
+		return "", false, false
+	}
+	t := n.Type()
+	if t == "comment" {
+		return "", false, false
+	}
+	if n.IsNamed() {
+		return n.Content(src), true, true
+	}
+	if strings.TrimSpace(t) == "" {
+		return "", false, false
+	}
+	return t, false, true
 }
 
 func (a treeSitterAnalyzer) functionInfo(n *sitter.Node, src []byte) FunctionInfo {
 	name, signature := a.spec.functionName(n, src)
 	start := n.StartPoint()
 	end := n.EndPoint()
-	cx := a.functionComplexity(n, src)
+	lineCount := int(end.Row) - int(start.Row) + 1
+	cx, halstead := a.functionMetrics(n, src)
 	return FunctionInfo{
-		Name:       name,
-		Signature:  signature,
-		Line:       int(start.Row) + 1,
-		LineCount:  int(end.Row) - int(start.Row) + 1,
-		Cyclomatic: cx.cyclomatic,
-		Cognitive:  cx.cognitive,
-		MaxNesting: cx.maxNesting,
-		Params:     a.spec.paramCount(n),
+		Name:            name,
+		Signature:       signature,
+		Line:            int(start.Row) + 1,
+		LineCount:       lineCount,
+		Cyclomatic:      cx.cyclomatic,
+		Cognitive:       cx.cognitive,
+		MaxNesting:      cx.maxNesting,
+		Params:          a.spec.paramCount(n),
+		Maintainability: maintainabilityIndex(halstead.Volume, cx.cyclomatic, lineCount),
 	}
 }
 
-// functionComplexity walks a function subtree, skipping nested functions (which
-// are enumerated and scored on their own).
-func (a treeSitterAnalyzer) functionComplexity(fn *sitter.Node, src []byte) complexity {
+// functionMetrics walks a function subtree once, computing complexity and
+// Halstead measures while skipping nested functions (which are enumerated and
+// scored on their own).
+func (a treeSitterAnalyzer) functionMetrics(fn *sitter.Node, src []byte) (complexity, Halstead) {
 	c := complexity{cyclomatic: 1}
+	h := newHalstead()
 
 	var walk func(n *sitter.Node, depth int)
 	walk = func(n *sitter.Node, depth int) {
 		for i := 0; i < int(n.ChildCount()); i++ {
 			child := n.Child(i)
-			if a.spec.isFunction(child.Type()) {
+			if child.IsNamed() && a.spec.isFunction(child.Type()) {
 				continue // nested function scored separately
+			}
+
+			if tok, operand, ok := tsLeafToken(child, src); ok {
+				if operand {
+					h.addOperand(tok)
+				} else {
+					h.addOperator(tok)
+				}
 			}
 
 			c.cyclomatic += a.spec.decision(child, src)
@@ -140,7 +192,7 @@ func (a treeSitterAnalyzer) functionComplexity(fn *sitter.Node, src []byte) comp
 		}
 	}
 	walk(fn, 0)
-	return c
+	return c, h.metrics()
 }
 
 // --- shared helpers -------------------------------------------------------
@@ -167,6 +219,10 @@ func fieldContent(n *sitter.Node, field string, src []byte) string {
 		return child.Content(src)
 	}
 	return ""
+}
+
+func stripQuotes(s string) string {
+	return strings.Trim(s, "\"'`")
 }
 
 // --- Python ---------------------------------------------------------------
@@ -208,6 +264,29 @@ func pythonSpec() tsSpec {
 				return 1
 			}
 			return 0
+		},
+		importSpecs: func(n *sitter.Node, src []byte) []string {
+			switch n.Type() {
+			case "import_statement":
+				var specs []string
+				for i := 0; i < int(n.NamedChildCount()); i++ {
+					child := n.NamedChild(i)
+					switch child.Type() {
+					case "dotted_name", "relative_import":
+						specs = append(specs, child.Content(src))
+					case "aliased_import":
+						if name := child.ChildByFieldName("name"); name != nil {
+							specs = append(specs, name.Content(src))
+						}
+					}
+				}
+				return specs
+			case "import_from_statement":
+				if module := n.ChildByFieldName("module_name"); module != nil {
+					return []string{module.Content(src)}
+				}
+			}
+			return nil
 		},
 		varBindings: func(n *sitter.Node, src []byte) int {
 			switch n.Type() {
@@ -337,6 +416,29 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 				}
 			}
 			return 0
+		},
+		importSpecs: func(n *sitter.Node, src []byte) []string {
+			switch n.Type() {
+			case "import_statement":
+				if source := n.ChildByFieldName("source"); source != nil {
+					return []string{stripQuotes(source.Content(src))}
+				}
+			case "call_expression":
+				fn := n.ChildByFieldName("function")
+				if fn == nil {
+					return nil
+				}
+				if fn.Type() == "import" || (fn.Type() == "identifier" && fn.Content(src) == "require") {
+					if args := n.ChildByFieldName("arguments"); args != nil {
+						for i := 0; i < int(args.NamedChildCount()); i++ {
+							if arg := args.NamedChild(i); arg.Type() == "string" {
+								return []string{stripQuotes(arg.Content(src))}
+							}
+						}
+					}
+				}
+			}
+			return nil
 		},
 		varBindings: func(n *sitter.Node, src []byte) int {
 			if n.Type() == "variable_declarator" {

@@ -9,12 +9,13 @@ import (
 
 // FileHotspot is a ranked file entry in a Summary.
 type FileHotspot struct {
-	Path       string
-	Language   string
-	Cyclomatic int
-	Churn      int
-	Hotspot    float64
-	LineCount  int
+	Path            string
+	Language        string
+	Cyclomatic      int
+	Churn           int
+	Hotspot         float64
+	LineCount       int
+	Maintainability float64
 }
 
 // FunctionHotspot is a ranked function entry in a Summary.
@@ -30,18 +31,19 @@ type FunctionHotspot struct {
 // Summary is an aggregate, ranked view of a scan, built to surface the highest
 // value places to improve.
 type Summary struct {
-	Files          int
-	SupportedFiles int
-	TotalLines     int
-	TotalCode      int
-	TotalComment   int
-	TotalBlank     int
-	TotalFunctions int
-	TotalTodos     int
-	GitChurn       bool
-	TopHotspots    []FileHotspot
-	MostComplex    []FunctionHotspot
-	Longest        []FunctionHotspot
+	Files              int
+	SupportedFiles     int
+	TotalLines         int
+	TotalCode          int
+	TotalComment       int
+	TotalBlank         int
+	TotalFunctions     int
+	TotalTodos         int
+	GitChurn           bool
+	TopHotspots        []FileHotspot
+	MostComplex        []FunctionHotspot
+	Longest            []FunctionHotspot
+	LowestMaintainable []FileHotspot
 }
 
 // ComputeChurn annotates each file node with its git commit frequency and a
@@ -123,12 +125,13 @@ func BuildSummary(root *TreeNode, topN int, gitChurn bool) Summary {
 					path = n.Name
 				}
 				files = append(files, FileHotspot{
-					Path:       path,
-					Language:   m.Language,
-					Cyclomatic: m.Cyclomatic,
-					Churn:      n.Churn,
-					Hotspot:    n.Hotspot,
-					LineCount:  m.LineCount,
+					Path:            path,
+					Language:        m.Language,
+					Cyclomatic:      m.Cyclomatic,
+					Churn:           n.Churn,
+					Hotspot:         n.Hotspot,
+					LineCount:       m.LineCount,
+					Maintainability: m.Maintainability,
 				})
 				for _, fn := range m.Functions {
 					funcs = append(funcs, FunctionHotspot{
@@ -204,6 +207,20 @@ func BuildSummary(root *TreeNode, topN int, gitChurn bool) Summary {
 		longest = longest[:topN]
 	}
 	summary.Longest = longest
+
+	maintainable := make([]FileHotspot, 0, len(files))
+	for _, f := range files {
+		if f.Cyclomatic > 0 { // only files with real code
+			maintainable = append(maintainable, f)
+		}
+	}
+	sort.SliceStable(maintainable, func(i, j int) bool {
+		return maintainable[i].Maintainability < maintainable[j].Maintainability
+	})
+	if len(maintainable) > topN {
+		maintainable = maintainable[:topN]
+	}
+	summary.LowestMaintainable = maintainable
 
 	return summary
 }

@@ -286,6 +286,57 @@ function f() {
 	}
 }
 
+func TestHalsteadAndMaintainability(t *testing.T) {
+	cases := []struct {
+		name     string
+		language string
+		source   string
+	}{
+		{"go", "go", "package s\nfunc add(a, b int) int {\n\tc := a + b\n\treturn c * 2\n}\n"},
+		{"python", "python", "def add(a, b):\n    c = a + b\n    return c * 2\n"},
+		{"typescript", "typescript", "function add(a: number, b: number): number {\n\tconst c = a + b;\n\treturn c * 2;\n}\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics := mustAnalyze(t, tc.language, tc.source)
+			if metrics.Halstead.Volume <= 0 {
+				t.Fatalf("expected positive Halstead volume, got %f", metrics.Halstead.Volume)
+			}
+			if metrics.Maintainability <= 0 || metrics.Maintainability > 100 {
+				t.Fatalf("expected maintainability in (0,100], got %f", metrics.Maintainability)
+			}
+			fn := findFunctionByName(metrics.Functions, "add")
+			if fn == nil {
+				t.Fatalf("expected to find add function")
+			}
+			if fn.Maintainability <= 0 || fn.Maintainability > 100 {
+				t.Fatalf("expected function maintainability in (0,100], got %f", fn.Maintainability)
+			}
+		})
+	}
+}
+
+func TestMaintainabilityFallsWithComplexity(t *testing.T) {
+	simple := mustAnalyze(t, "go", "package s\nfunc f(x int) int { return x }\n")
+	complex := mustAnalyze(t, "go", `package s
+
+func f(x int) int {
+	total := 0
+	for i := 0; i < x; i++ {
+		if i%2 == 0 && i > 3 {
+			total += i
+		} else if i%3 == 0 {
+			total -= i
+		}
+	}
+	return total
+}
+`)
+	if complex.Maintainability >= simple.Maintainability {
+		t.Fatalf("expected complex file MI (%.1f) below simple file MI (%.1f)", complex.Maintainability, simple.Maintainability)
+	}
+}
+
 func TestSortFunctionsOrdersByLineThenNameThenSignature(t *testing.T) {
 	functions := []FunctionInfo{
 		{Name: "zeta", Signature: "(z int)", Line: 10},

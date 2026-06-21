@@ -3,7 +3,9 @@ package inspector
 import (
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
+	"strconv"
 	"strings"
 )
 
@@ -23,6 +25,14 @@ func analyzeGoSource(source []byte) (*FileMetrics, error) {
 
 	metrics := &FileMetrics{Language: "go"}
 	metrics.ImportCount = len(file.Imports)
+	for _, imp := range file.Imports {
+		if imp.Path == nil {
+			continue
+		}
+		if path, err := strconv.Unquote(imp.Path.Value); err == nil {
+			metrics.Imports = append(metrics.Imports, path)
+		}
+	}
 
 	functions := make([]FunctionInfo, 0)
 	variableCount := 0
@@ -52,33 +62,9 @@ func analyzeGoSource(source []byte) (*FileMetrics, error) {
 				receiver := renderGoExpr(n.Recv.List[0].Type)
 				name = receiver + "." + name
 			}
-			startLine := fset.Position(n.Pos()).Line
-			endLine := fset.Position(n.End()).Line
-			cx := goFunctionComplexity(n.Body)
-			functions = append(functions, FunctionInfo{
-				Name:       name,
-				Signature:  buildGoFunctionSignature(n.Type),
-				Line:       startLine,
-				LineCount:  clampLineCount(startLine, endLine),
-				Cyclomatic: cx.cyclomatic,
-				Cognitive:  cx.cognitive,
-				MaxNesting: cx.maxNesting,
-				Params:     goParamCount(n.Type),
-			})
+			functions = append(functions, buildGoFunction(fset, source, name, n, n.Type, n.Body))
 		case *ast.FuncLit:
-			startLine := fset.Position(n.Pos()).Line
-			endLine := fset.Position(n.End()).Line
-			cx := goFunctionComplexity(n.Body)
-			functions = append(functions, FunctionInfo{
-				Name:       "<anonymous>",
-				Signature:  buildGoFunctionSignature(n.Type),
-				Line:       startLine,
-				LineCount:  clampLineCount(startLine, endLine),
-				Cyclomatic: cx.cyclomatic,
-				Cognitive:  cx.cognitive,
-				MaxNesting: cx.maxNesting,
-				Params:     goParamCount(n.Type),
-			})
+			functions = append(functions, buildGoFunction(fset, source, "<anonymous>", n, n.Type, n.Body))
 		}
 		return true
 	})
@@ -102,7 +88,74 @@ func analyzeGoSource(source []byte) (*FileMetrics, error) {
 	}
 	metrics.CodeLines, metrics.CommentLines, metrics.BlankLines = lineClassification(source, comments)
 
+	metrics.Halstead = goHalstead(source)
+	metrics.Maintainability = maintainabilityIndex(metrics.Halstead.Volume, sumFunctionCyclomatic(functions), metrics.CodeLines)
+
 	return metrics, nil
+}
+
+// buildGoFunction assembles a FunctionInfo with complexity and Halstead-derived
+// maintainability for a Go function declaration or literal.
+func buildGoFunction(fset *token.FileSet, source []byte, name string, node ast.Node, fnType *ast.FuncType, body *ast.BlockStmt) FunctionInfo {
+	start := fset.Position(node.Pos())
+	end := fset.Position(node.End())
+	cx := goFunctionComplexity(body)
+
+	halstead := Halstead{}
+	if start.Offset >= 0 && end.Offset <= len(source) && end.Offset > start.Offset {
+		halstead = goHalstead(source[start.Offset:end.Offset])
+	}
+	lineCount := clampLineCount(start.Line, end.Line)
+
+	return FunctionInfo{
+		Name:            name,
+		Signature:       buildGoFunctionSignature(fnType),
+		Line:            start.Line,
+		LineCount:       lineCount,
+		Cyclomatic:      cx.cyclomatic,
+		Cognitive:       cx.cognitive,
+		MaxNesting:      cx.maxNesting,
+		Params:          goParamCount(fnType),
+		Maintainability: maintainabilityIndex(halstead.Volume, cx.cyclomatic, lineCount),
+	}
+}
+
+// goHalstead tokenizes Go source with go/scanner and accumulates Halstead
+// operators and operands. Identifiers and literals are operands; keywords,
+// operators and delimiters are operators. Comments and semicolons are skipped.
+func goHalstead(source []byte) Halstead {
+	h := newHalstead()
+	var s scanner.Scanner
+	fset := token.NewFileSet()
+	file := fset.AddFile("", fset.Base(), len(source))
+	s.Init(file, source, nil, 0)
+	for {
+		_, tok, lit := s.Scan()
+		if tok == token.EOF {
+			break
+		}
+		switch {
+		case tok == token.IDENT || tok.IsLiteral():
+			operand := lit
+			if operand == "" {
+				operand = tok.String()
+			}
+			h.addOperand(operand)
+		case tok == token.SEMICOLON, tok == token.COMMENT:
+			// skip statement separators and comments
+		default:
+			h.addOperator(tok.String())
+		}
+	}
+	return h.metrics()
+}
+
+func sumFunctionCyclomatic(functions []FunctionInfo) int {
+	total := 0
+	for _, fn := range functions {
+		total += fn.Cyclomatic
+	}
+	return total
 }
 
 // goFunctionComplexity computes cyclomatic, cognitive and nesting metrics over a

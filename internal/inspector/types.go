@@ -16,6 +16,19 @@ type FunctionInfo struct {
 	MaxNesting int
 	// Params is the number of declared parameters.
 	Params int
+	// Maintainability is a 0-100 Maintainability Index for the function
+	// (higher is better).
+	Maintainability float64
+}
+
+// Halstead holds the Halstead complexity measures derived from the operators
+// and operands in a unit of code.
+type Halstead struct {
+	Vocabulary int     // distinct operators + distinct operands
+	Length     int     // total operators + total operands
+	Volume     float64 // Length * log2(Vocabulary)
+	Difficulty float64 // (distinctOperators/2) * (totalOperands/distinctOperands)
+	Effort     float64 // Difficulty * Volume
 }
 
 // FileMetrics stores per-file metrics extracted by analyzers.
@@ -33,7 +46,14 @@ type FileMetrics struct {
 	Cyclomatic int
 	// MaxComplexity is the highest single-function cyclomatic complexity.
 	MaxComplexity int
-	Functions     []FunctionInfo
+	// Halstead holds the file-level Halstead measures.
+	Halstead Halstead
+	// Maintainability is a 0-100 Maintainability Index for the file.
+	Maintainability float64
+	// Imports holds the raw import specifiers found in the file, used to build
+	// the dependency graph.
+	Imports   []string `json:",omitempty"`
+	Functions []FunctionInfo
 }
 
 // FunctionCount returns the number of discovered functions in this file.

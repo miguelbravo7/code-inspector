@@ -83,6 +83,7 @@ func formatNode(node *inspector.TreeNode) string {
 			fmt.Sprintf("lines:%d", m.LineCount),
 			fmt.Sprintf("code:%d", m.CodeLines),
 			fmt.Sprintf("cyc:%d", m.Cyclomatic),
+			fmt.Sprintf("mi:%.0f", m.Maintainability),
 			fmt.Sprintf("funcs:%d", len(m.Functions)),
 		}
 		if m.TodoCount > 0 {
