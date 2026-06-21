@@ -97,16 +97,20 @@ func hasNonSpace(s string) bool {
 }
 
 // halsteadAccumulator collects operator and operand occurrences so Halstead
-// measures can be derived once counting is complete.
+// measures can be derived once counting is complete. Operators are keyed by
+// their (interned) token text; operands are keyed by an FNV-1a hash of their
+// bytes so the hot tree-sitter walk can record them without allocating a string
+// per leaf. Hash collisions only ever undercount distinct operands by a
+// negligible amount, which is acceptable for a metric.
 type halsteadAccumulator struct {
 	operators map[string]int
-	operands  map[string]int
+	operands  map[uint64]int
 }
 
 func newHalstead() *halsteadAccumulator {
 	return &halsteadAccumulator{
 		operators: make(map[string]int),
-		operands:  make(map[string]int),
+		operands:  make(map[uint64]int),
 	}
 }
 
@@ -121,7 +125,14 @@ func (h *halsteadAccumulator) addOperand(token string) {
 	if token == "" {
 		return
 	}
-	h.operands[token]++
+	h.operands[fnv64String(token)]++
+}
+
+func (h *halsteadAccumulator) addOperandBytes(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	h.operands[fnv64Bytes(b)]++
 }
 
 func (h *halsteadAccumulator) metrics() Halstead {
@@ -144,12 +155,35 @@ func (h *halsteadAccumulator) metrics() Halstead {
 	return out
 }
 
-func sumValues(m map[string]int) int {
+func sumValues[K comparable](m map[K]int) int {
 	total := 0
 	for _, v := range m {
 		total += v
 	}
 	return total
+}
+
+const (
+	fnvOffset64 = 14695981039346656037
+	fnvPrime64  = 1099511628211
+)
+
+func fnv64Bytes(b []byte) uint64 {
+	h := uint64(fnvOffset64)
+	for _, c := range b {
+		h ^= uint64(c)
+		h *= fnvPrime64
+	}
+	return h
+}
+
+func fnv64String(s string) uint64 {
+	h := uint64(fnvOffset64)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= fnvPrime64
+	}
+	return h
 }
 
 // maintainabilityIndex returns the normalized 0-100 Maintainability Index

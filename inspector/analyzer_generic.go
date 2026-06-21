@@ -100,8 +100,8 @@ func genericSpec(name string, grammar *sitter.Language, hints *LanguageHints) ts
 	nameField := resolveField(vocab, hintField(hints, func(h *LanguageHints) string { return h.NameField }), "name")
 	paramsField := resolveField(vocab, hintField(hints, func(h *LanguageHints) string { return h.ParamsField }), "parameters", "parameter_list", "formal_parameters", "parameter")
 
-	booleanDecision := func(n *sitter.Node, src []byte) bool {
-		if _, ok := genericBooleanKinds[n.Kind()]; !ok {
+	booleanDecision := func(kind string, n *sitter.Node, src []byte) bool {
+		if _, ok := genericBooleanKinds[kind]; !ok {
 			return false
 		}
 		return hasBooleanOperator(n, src)
@@ -128,34 +128,33 @@ func genericSpec(name string, grammar *sitter.Language, hints *LanguageHints) ts
 		paramCount: func(n *sitter.Node) int {
 			return namedNonComment(genericParamsNode(n, paramsField))
 		},
-		importDelta: func(n *sitter.Node, src []byte) int {
-			if _, ok := importSet[n.Kind()]; ok {
+		importDelta: func(kind string, n *sitter.Node, src []byte) int {
+			if _, ok := importSet[kind]; ok {
 				return 1
 			}
 			return 0
 		},
-		importSpecs: func(n *sitter.Node, src []byte) []string {
-			return genericImportSpecs(n, src, importSet)
+		importSpecs: func(kind string, n *sitter.Node, src []byte) []string {
+			return genericImportSpecs(kind, n, src, importSet)
 		},
-		varBindings: func(n *sitter.Node, src []byte) int { return 0 },
-		decision: func(n *sitter.Node, src []byte) int {
-			if _, ok := decisionSet[n.Kind()]; ok {
+		varBindings: func(kind string, n *sitter.Node, src []byte) int { return 0 },
+		decision: func(kind string, n *sitter.Node, src []byte) int {
+			if _, ok := decisionSet[kind]; ok {
 				return 1
 			}
-			if booleanDecision(n, src) {
+			if booleanDecision(kind, n, src) {
 				return 1
 			}
 			return 0
 		},
-		cognitive: func(n *sitter.Node, src []byte) cogKind {
-			kind := n.Kind()
+		cognitive: func(kind string, n *sitter.Node, src []byte) cogKind {
 			if _, ok := nestingSet[kind]; ok {
 				return cogNesting
 			}
 			if _, ok := flatSet[kind]; ok {
 				return cogFlat
 			}
-			if booleanDecision(n, src) {
+			if booleanDecision(kind, n, src) {
 				return cogFlat
 			}
 			return cogNone
@@ -167,8 +166,10 @@ func genericSpec(name string, grammar *sitter.Language, hints *LanguageHints) ts
 // (&&, ||, ??, and, or). It prefers the grammar's "operator" field and falls
 // back to scanning direct children when no such field exists.
 func hasBooleanOperator(n *sitter.Node, src []byte) bool {
+	// map lookups with string([]byte) keys do not allocate (Go optimization).
 	if op := n.ChildByFieldName("operator"); op != nil {
-		_, ok := genericBooleanOperators[op.Utf8Text(src)]
+		start, end := op.ByteRange()
+		_, ok := genericBooleanOperators[string(src[start:end])]
 		return ok
 	}
 	for i := uint(0); i < n.ChildCount(); i++ {
@@ -176,7 +177,8 @@ func hasBooleanOperator(n *sitter.Node, src []byte) bool {
 		if child.IsNamed() {
 			continue // operators are anonymous tokens; skip named operands
 		}
-		if _, ok := genericBooleanOperators[child.Utf8Text(src)]; ok {
+		start, end := child.ByteRange()
+		if _, ok := genericBooleanOperators[string(src[start:end])]; ok {
 			return true
 		}
 	}
@@ -504,9 +506,9 @@ var nameLikeKinds = map[string]struct{}{
 // genericImportSpecs extracts the raw module specifier(s) from an import node or a
 // require-style call, for the dependency graph. Returns nil when nothing concrete
 // is extractable (system <...> includes, dynamic arguments, etc.).
-func genericImportSpecs(n *sitter.Node, src []byte, importSet map[string]struct{}) []string {
-	if _, ok := importSet[n.Kind()]; ok {
-		switch n.Kind() {
+func genericImportSpecs(kind string, n *sitter.Node, src []byte, importSet map[string]struct{}) []string {
+	if _, ok := importSet[kind]; ok {
+		switch kind {
 		case "package_clause", "package_declaration":
 			// A package statement is the file's own identity, not a dependency.
 			return nil

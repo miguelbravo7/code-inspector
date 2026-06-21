@@ -1,0 +1,10 @@
+# Test binaries and profiles
+*.test
+*.test.exe
+*.exe
+*.prof
+*.out
+
+# Build output
+/code-inspector
+/cmd/code-inspector/code-inspector

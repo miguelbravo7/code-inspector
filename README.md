@@ -218,13 +218,19 @@ full pipeline:
 go test ./inspector -run ^$ -bench 'GenericSpecBuild|BuildDependencyGraph|DetectDuplication|Inspect' -benchmem
 ```
 
-> Notes (measured locally, GOMAXPROCS=16): the standard-library `go/ast` analyzer
-> is roughly an order of magnitude faster per byte than the tree-sitter analyzers,
-> which dominate runtime (most time is in cgo `Utf8Text`/walk). Per-language
-> registration introspection is a one-time ~0.3 ms and negligible. The
-> per-directory concurrent worker pool (`-workers=0`) does **not** speed up a mixed
-> cgo workload — it is marginally slower than the sequential default
-> (`-workers=1`), which is why sequential is the default.
+> Notes (measured locally, GOMAXPROCS=16): the tree-sitter walk interns node
+> kinds (via a per-grammar id→kind map) and computes file- and function-level
+> metrics in a single pass, which cut allocations by ~80% and analysis time by
+> 20–45% versus a naive `Kind()`-per-node, two-pass walk. The standard-library
+> `go/ast` analyzer is still several times faster per byte than the tree-sitter
+> ones; per-language registration introspection is a one-time ~0.3 ms.
+>
+> Traversal uses a single global worker pool over the whole file set (not a pool
+> per directory). Even so, concurrency (`-workers=0`) is *slower* than the
+> sequential default (`-workers=1`) for a tree-sitter workload: every node access
+> is a cgo call, and that per-node cgo overhead under many goroutines outweighs
+> the multi-core gain. Sequential is therefore the default; the pool helps only
+> when parsing is cheap relative to I/O.
 
 ## Example
 

@@ -20,18 +20,21 @@ const (
 
 // tsSpec describes how to extract metrics from one tree-sitter grammar. The
 // engine in treeSitterAnalyzer is language-agnostic; all per-language knowledge
-// lives in these closures.
+// lives in these closures. Closures receive the node's kind string pre-resolved
+// (interned via idToKind) so the hot walk never allocates one Kind() string per
+// node call site.
 type tsSpec struct {
 	language     string
 	grammar      *sitter.Language
-	isFunction   func(nodeType string) bool
+	idToKind     map[uint16]string
+	isFunction   func(kind string) bool
 	functionName func(n *sitter.Node, src []byte) (name, signature string)
 	paramCount   func(n *sitter.Node) int
-	importDelta  func(n *sitter.Node, src []byte) int
-	importSpecs  func(n *sitter.Node, src []byte) []string
-	varBindings  func(n *sitter.Node, src []byte) int
-	decision     func(n *sitter.Node, src []byte) int // cyclomatic delta
-	cognitive    func(n *sitter.Node, src []byte) cogKind
+	importDelta  func(kind string, n *sitter.Node, src []byte) int
+	importSpecs  func(kind string, n *sitter.Node, src []byte) []string
+	varBindings  func(kind string, n *sitter.Node, src []byte) int
+	decision     func(kind string, n *sitter.Node, src []byte) int // cyclomatic delta
+	cognitive    func(kind string, n *sitter.Node, src []byte) cogKind
 }
 
 type treeSitterAnalyzer struct {
@@ -39,7 +42,26 @@ type treeSitterAnalyzer struct {
 }
 
 func newTreeSitterAnalyzer(spec tsSpec) treeSitterAnalyzer {
+	spec.idToKind = buildIDToKind(spec.grammar)
 	return treeSitterAnalyzer{spec: spec}
+}
+
+// buildIDToKind maps every symbol id of a grammar to its (interned) kind name,
+// built once at registration so the per-node walk can resolve a kind without a
+// cgo GoString allocation.
+func buildIDToKind(grammar *sitter.Language) map[uint16]string {
+	if grammar == nil {
+		return map[uint16]string{}
+	}
+	count := grammar.NodeKindCount()
+	m := make(map[uint16]string, count)
+	for i := uint32(0); i < count && i <= 0xFFFF; i++ {
+		id := uint16(i)
+		if name := grammar.NodeKindForId(id); name != "" {
+			m[id] = name
+		}
+	}
+	return m
 }
 
 func (a treeSitterAnalyzer) Analyze(source []byte) (*FileMetrics, error) {
@@ -55,143 +77,142 @@ func (a treeSitterAnalyzer) Analyze(source []byte) (*FileMetrics, error) {
 	}
 	defer tree.Close()
 
-	metrics := &FileMetrics{Language: a.spec.language}
-	comments := make([]lineSpan, 0)
-	fileHalstead := newHalstead()
-	a.collect(tree.RootNode(), source, metrics, &comments, fileHalstead)
+	w := &tsWalk{spec: &a.spec, src: source, fileH: newHalstead()}
+	w.metrics = &FileMetrics{Language: a.spec.language}
+	w.walk(tree.RootNode(), 0)
 
-	metrics.CodeLines, metrics.CommentLines, metrics.BlankLines = lineClassification(source, comments)
-	metrics.Halstead = fileHalstead.metrics()
+	m := w.metrics
+	m.CodeLines, m.CommentLines, m.BlankLines = lineClassification(source, w.comments)
+	m.Halstead = w.fileH.metrics()
 
 	fileCyclomatic := 0
-	for _, fn := range metrics.Functions {
+	for _, fn := range m.Functions {
 		fileCyclomatic += fn.Cyclomatic
 	}
-	metrics.Maintainability = maintainabilityIndex(metrics.Halstead.Volume, fileCyclomatic, metrics.CodeLines)
-	return metrics, nil
+	m.Maintainability = maintainabilityIndex(m.Halstead.Volume, fileCyclomatic, m.CodeLines)
+	return m, nil
 }
 
-// collect walks the whole tree once, accumulating file-level counts and
-// enumerating functions.
-func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMetrics, comments *[]lineSpan, h *halsteadAccumulator) {
-	t := n.Kind()
+// tsWalk holds the state for a single depth-first pass that computes file-level
+// metrics and per-function metrics together (no second walk).
+type tsWalk struct {
+	spec     *tsSpec
+	src      []byte
+	metrics  *FileMetrics
+	comments []lineSpan
+	fileH    *halsteadAccumulator
+	stack    []*funcFrame // enclosing functions; innermost is last
+}
 
-	if isCommentKind(t) {
-		metrics.TodoCount += countTodoMarkers(n.Utf8Text(src))
+// funcFrame accumulates one function's metrics while its subtree is walked.
+type funcFrame struct {
+	cyclomatic int
+	cognitive  int
+	maxNesting int
+	halstead   *halsteadAccumulator
+}
+
+func (w *tsWalk) innermost() *funcFrame {
+	if len(w.stack) == 0 {
+		return nil
+	}
+	return w.stack[len(w.stack)-1]
+}
+
+// walk visits n at the given control-flow nesting depth (relative to the
+// innermost enclosing function). depth is meaningful only inside a function.
+func (w *tsWalk) walk(n *sitter.Node, depth int) {
+	spec := w.spec
+	src := w.src
+	kind := spec.idToKind[n.KindId()]
+	named := n.IsNamed()
+	isComment := isCommentKind(kind)
+
+	if isComment {
+		w.metrics.TodoCount += countTodoMarkers(n.Utf8Text(src))
 		start := n.StartPosition()
 		end := n.EndPosition()
-		*comments = append(*comments, lineSpan{
+		w.comments = append(w.comments, lineSpan{
 			startRow: int(start.Row), startCol: int(start.Column),
 			endRow: int(end.Row), endCol: int(end.Column),
 		})
 	}
 
-	if tok, operand, ok := tsLeafToken(n, src); ok {
-		if operand {
-			h.addOperand(tok)
-		} else {
-			h.addOperator(tok)
+	// Halstead: classify leaf tokens, attributing to the file and the innermost
+	// enclosing function.
+	if !isComment && n.ChildCount() == 0 {
+		top := w.innermost()
+		if named {
+			startByte, endByte := n.ByteRange()
+			operand := src[startByte:endByte]
+			w.fileH.addOperandBytes(operand)
+			if top != nil {
+				top.halstead.addOperandBytes(operand)
+			}
+		} else if strings.TrimSpace(kind) != "" {
+			w.fileH.addOperator(kind)
+			if top != nil {
+				top.halstead.addOperator(kind)
+			}
 		}
 	}
 
-	metrics.ImportCount += a.spec.importDelta(n, src)
-	metrics.Imports = append(metrics.Imports, a.spec.importSpecs(n, src)...)
-	metrics.VariableCount += a.spec.varBindings(n, src)
+	// File-level counts.
+	w.metrics.ImportCount += spec.importDelta(kind, n, src)
+	w.metrics.Imports = append(w.metrics.Imports, spec.importSpecs(kind, n, src)...)
+	w.metrics.VariableCount += spec.varBindings(kind, n, src)
 
-	// IsNamed guards against tokens that share a type name with a node kind
-	// (e.g. the `function` keyword token vs a function expression node).
-	if n.IsNamed() && a.spec.isFunction(t) {
-		metrics.Functions = append(metrics.Functions, a.functionInfo(n, src))
+	// A function opens a new frame; its body is scored independently and nested
+	// functions are scored on their own (the parent frame gets nothing from them).
+	if named && spec.isFunction(kind) {
+		frame := &funcFrame{cyclomatic: 1, halstead: newHalstead()}
+		w.stack = append(w.stack, frame)
+		for i := uint(0); i < n.ChildCount(); i++ {
+			w.walk(n.Child(i), 0)
+		}
+		w.stack = w.stack[:len(w.stack)-1]
+		w.metrics.Functions = append(w.metrics.Functions, w.finishFunction(n, src, frame))
+		return
 	}
 
-	for i := 0; i < int(n.ChildCount()); i++ {
-		a.collect(n.Child(uint(i)), src, metrics, comments, h)
+	// Attribute complexity to the innermost enclosing function.
+	childDepth := depth
+	if top := w.innermost(); top != nil {
+		top.cyclomatic += spec.decision(kind, n, src)
+		switch spec.cognitive(kind, n, src) {
+		case cogNesting:
+			top.cognitive += 1 + depth
+			childDepth = depth + 1
+			if childDepth > top.maxNesting {
+				top.maxNesting = childDepth
+			}
+		case cogFlat:
+			top.cognitive++
+		}
+	}
+
+	for i := uint(0); i < n.ChildCount(); i++ {
+		w.walk(n.Child(i), childDepth)
 	}
 }
 
-// tsLeafToken classifies a leaf node as a Halstead operand or operator. Named
-// leaves (identifiers, literals) are operands keyed by their text; anonymous
-// leaves (punctuation, keywords) are operators keyed by their type. Comments and
-// non-leaf nodes are ignored.
-func tsLeafToken(n *sitter.Node, src []byte) (token string, operand bool, ok bool) {
-	if n.ChildCount() != 0 {
-		return "", false, false
-	}
-	t := n.Kind()
-	if isCommentKind(t) {
-		return "", false, false
-	}
-	if n.IsNamed() {
-		return n.Utf8Text(src), true, true
-	}
-	if strings.TrimSpace(t) == "" {
-		return "", false, false
-	}
-	return t, false, true
-}
-
-func (a treeSitterAnalyzer) functionInfo(n *sitter.Node, src []byte) FunctionInfo {
-	name, signature := a.spec.functionName(n, src)
+func (w *tsWalk) finishFunction(n *sitter.Node, src []byte, f *funcFrame) FunctionInfo {
+	name, signature := w.spec.functionName(n, src)
 	start := n.StartPosition()
 	end := n.EndPosition()
 	lineCount := int(end.Row) - int(start.Row) + 1
-	cx, halstead := a.functionMetrics(n, src)
+	h := f.halstead.metrics()
 	return FunctionInfo{
 		Name:            name,
 		Signature:       signature,
 		Line:            int(start.Row) + 1,
 		LineCount:       lineCount,
-		Cyclomatic:      cx.cyclomatic,
-		Cognitive:       cx.cognitive,
-		MaxNesting:      cx.maxNesting,
-		Params:          a.spec.paramCount(n),
-		Maintainability: maintainabilityIndex(halstead.Volume, cx.cyclomatic, lineCount),
+		Cyclomatic:      f.cyclomatic,
+		Cognitive:       f.cognitive,
+		MaxNesting:      f.maxNesting,
+		Params:          w.spec.paramCount(n),
+		Maintainability: maintainabilityIndex(h.Volume, f.cyclomatic, lineCount),
 	}
-}
-
-// functionMetrics walks a function subtree once, computing complexity and
-// Halstead measures while skipping nested functions (which are enumerated and
-// scored on their own).
-func (a treeSitterAnalyzer) functionMetrics(fn *sitter.Node, src []byte) (complexity, Halstead) {
-	c := complexity{cyclomatic: 1}
-	h := newHalstead()
-
-	var walk func(n *sitter.Node, depth int)
-	walk = func(n *sitter.Node, depth int) {
-		for i := 0; i < int(n.ChildCount()); i++ {
-			child := n.Child(uint(i))
-			if child.IsNamed() && a.spec.isFunction(child.Kind()) {
-				continue // nested function scored separately
-			}
-
-			if tok, operand, ok := tsLeafToken(child, src); ok {
-				if operand {
-					h.addOperand(tok)
-				} else {
-					h.addOperator(tok)
-				}
-			}
-
-			c.cyclomatic += a.spec.decision(child, src)
-
-			nestInc := 0
-			switch a.spec.cognitive(child, src) {
-			case cogNesting:
-				c.cognitive += 1 + depth
-				nestInc = 1
-			case cogFlat:
-				c.cognitive++
-			}
-
-			newDepth := depth + nestInc
-			if newDepth > c.maxNesting {
-				c.maxNesting = newDepth
-			}
-			walk(child, newDepth)
-		}
-	}
-	walk(fn, 0)
-	return c, h.metrics()
 }
 
 // --- shared helpers -------------------------------------------------------
@@ -262,15 +283,15 @@ func pythonSpec() tsSpec {
 		paramCount: func(n *sitter.Node) int {
 			return namedNonComment(n.ChildByFieldName("parameters"))
 		},
-		importDelta: func(n *sitter.Node, src []byte) int {
-			switch n.Kind() {
+		importDelta: func(kind string, n *sitter.Node, src []byte) int {
+			switch kind {
 			case "import_statement", "import_from_statement", "future_import_statement":
 				return 1
 			}
 			return 0
 		},
-		importSpecs: func(n *sitter.Node, src []byte) []string {
-			switch n.Kind() {
+		importSpecs: func(kind string, n *sitter.Node, src []byte) []string {
+			switch kind {
 			case "import_statement":
 				var specs []string
 				for i := 0; i < int(n.NamedChildCount()); i++ {
@@ -292,8 +313,8 @@ func pythonSpec() tsSpec {
 			}
 			return nil
 		},
-		varBindings: func(n *sitter.Node, src []byte) int {
-			switch n.Kind() {
+		varBindings: func(kind string, n *sitter.Node, src []byte) int {
+			switch kind {
 			case "assignment":
 				return countTargetIdentifiers(n.ChildByFieldName("left"))
 			case "named_expression":
@@ -301,17 +322,17 @@ func pythonSpec() tsSpec {
 			}
 			return 0
 		},
-		decision: func(n *sitter.Node, src []byte) int {
-			if _, ok := decisions[n.Kind()]; ok {
+		decision: func(kind string, n *sitter.Node, src []byte) int {
+			if _, ok := decisions[kind]; ok {
 				return 1
 			}
 			return 0
 		},
-		cognitive: func(n *sitter.Node, src []byte) cogKind {
-			if _, ok := nesting[n.Kind()]; ok {
+		cognitive: func(kind string, n *sitter.Node, src []byte) cogKind {
+			if _, ok := nesting[kind]; ok {
 				return cogNesting
 			}
-			if _, ok := flat[n.Kind()]; ok {
+			if _, ok := flat[kind]; ok {
 				return cogFlat
 			}
 			return cogNone
@@ -366,11 +387,16 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 	}
 	booleanOps := map[string]struct{}{"&&": {}, "||": {}, "??": {}}
 
-	isBooleanBinary := func(n *sitter.Node, src []byte) bool {
-		if n.Kind() != "binary_expression" {
+	isBooleanBinary := func(kind string, n *sitter.Node, src []byte) bool {
+		if kind != "binary_expression" {
 			return false
 		}
-		_, ok := booleanOps[fieldContent(n, "operator", src)]
+		op := n.ChildByFieldName("operator")
+		if op == nil {
+			return false
+		}
+		start, end := op.ByteRange()
+		_, ok := booleanOps[string(src[start:end])] // map lookup with string([]byte) does not allocate
 		return ok
 	}
 
@@ -406,8 +432,8 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 			}
 			return 0
 		},
-		importDelta: func(n *sitter.Node, src []byte) int {
-			switch n.Kind() {
+		importDelta: func(kind string, n *sitter.Node, src []byte) int {
+			switch kind {
 			case "import_statement":
 				return 1
 			case "call_expression":
@@ -424,8 +450,8 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 			}
 			return 0
 		},
-		importSpecs: func(n *sitter.Node, src []byte) []string {
-			switch n.Kind() {
+		importSpecs: func(kind string, n *sitter.Node, src []byte) []string {
+			switch kind {
 			case "import_statement":
 				if source := n.ChildByFieldName("source"); source != nil {
 					return []string{stripQuotes(source.Utf8Text(src))}
@@ -447,26 +473,26 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 			}
 			return nil
 		},
-		varBindings: func(n *sitter.Node, src []byte) int {
-			if n.Kind() == "variable_declarator" {
+		varBindings: func(kind string, n *sitter.Node, src []byte) int {
+			if kind == "variable_declarator" {
 				return countJSBindingNames(n.ChildByFieldName("name"))
 			}
 			return 0
 		},
-		decision: func(n *sitter.Node, src []byte) int {
-			if _, ok := decisions[n.Kind()]; ok {
+		decision: func(kind string, n *sitter.Node, src []byte) int {
+			if _, ok := decisions[kind]; ok {
 				return 1
 			}
-			if isBooleanBinary(n, src) {
+			if isBooleanBinary(kind, n, src) {
 				return 1
 			}
 			return 0
 		},
-		cognitive: func(n *sitter.Node, src []byte) cogKind {
-			if _, ok := nesting[n.Kind()]; ok {
+		cognitive: func(kind string, n *sitter.Node, src []byte) cogKind {
+			if _, ok := nesting[kind]; ok {
 				return cogNesting
 			}
-			if n.Kind() == "else_clause" || isBooleanBinary(n, src) {
+			if kind == "else_clause" || isBooleanBinary(kind, n, src) {
 				return cogFlat
 			}
 			return cogNone

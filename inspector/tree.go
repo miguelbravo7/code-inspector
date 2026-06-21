@@ -59,16 +59,25 @@ func BuildTree(rootPath string, cfg Config) (*TreeNode, error) {
 		RelPath: ".",
 		IsDir:   true,
 	}
-	if err := walkTree(root, cfg, absRoot); err != nil {
+
+	// Phase 1: build the tree structure sequentially (I/O only) and collect the
+	// supported files. Phase 2: analyze them with a single pool spanning the whole
+	// tree (so parallelism is not limited to one directory at a time).
+	var pending []*TreeNode
+	if err := buildSubtree(root, cfg, absRoot, &pending); err != nil {
 		return nil, err
 	}
+	analyzeFiles(pending, cfg.AnalyzerWorkers)
+
 	if cfg.SupportedOnly {
 		pruneUnsupportedDirectories(root)
 	}
 	return root, nil
 }
 
-func walkTree(parent *TreeNode, cfg Config, rootPath string) error {
+// buildSubtree builds the tree structure under parent (sequential, I/O only),
+// appending every supported file node to pending for later parallel analysis.
+func buildSubtree(parent *TreeNode, cfg Config, rootPath string, pending *[]*TreeNode) error {
 	entries, err := os.ReadDir(parent.Path)
 	if err != nil {
 		return fmt.Errorf("read directory %q: %w", parent.Path, err)
@@ -83,9 +92,7 @@ func walkTree(parent *TreeNode, cfg Config, rootPath string) error {
 		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
 	})
 
-	analyzedFiles := analyzeFilesInDirectory(parent.Path, entries, cfg.AnalyzerWorkers)
-
-	for idx, entry := range entries {
+	for _, entry := range entries {
 		name := entry.Name()
 		fullPath := filepath.Join(parent.Path, name)
 
@@ -94,7 +101,7 @@ func walkTree(parent *TreeNode, cfg Config, rootPath string) error {
 				continue
 			}
 			dirNode := &TreeNode{Name: name, Path: fullPath, RelPath: relPath(rootPath, fullPath), IsDir: true}
-			if err := walkTree(dirNode, cfg, rootPath); err != nil {
+			if err := buildSubtree(dirNode, cfg, rootPath, pending); err != nil {
 				dirNode.Warning = err.Error()
 			}
 			parent.Children = append(parent.Children, dirNode)
@@ -105,84 +112,52 @@ func walkTree(parent *TreeNode, cfg Config, rootPath string) error {
 			continue
 		}
 
-		analyzed, ok := analyzedFiles[idx]
-		if !ok {
+		supported := isSupportedExtension(name)
+		if cfg.SupportedOnly && !supported {
 			continue
 		}
-
-		if cfg.SupportedOnly && !analyzed.supported {
-			continue
+		fileNode := &TreeNode{Name: name, Path: fullPath, RelPath: relPath(rootPath, fullPath), IsDir: false}
+		parent.Children = append(parent.Children, fileNode)
+		if supported {
+			*pending = append(*pending, fileNode)
 		}
-		analyzed.node.RelPath = relPath(rootPath, analyzed.node.Path)
-		parent.Children = append(parent.Children, analyzed.node)
 	}
 
 	return nil
 }
 
-type fileAnalysisResult struct {
-	node      *TreeNode
-	supported bool
-}
+// analyzeFiles fills metrics for every collected file node using a single bounded
+// worker pool spanning the whole tree. workers: 1 = sequential, 0 = auto. Each
+// worker writes only to its own node, so no synchronization is needed.
+func analyzeFiles(nodes []*TreeNode, configuredWorkerCount int) {
+	if len(nodes) == 0 {
+		return
+	}
 
-type indexedFileAnalysisResult struct {
-	index  int
-	result fileAnalysisResult
-}
-
-func analyzeFilesInDirectory(parentPath string, entries []os.DirEntry, configuredWorkerCount int) map[int]fileAnalysisResult {
-	fileIndexes := make([]int, 0, len(entries))
-	for idx, entry := range entries {
-		if entry.IsDir() {
-			continue
+	workerCount := normalizeWorkerCount(len(nodes), configuredWorkerCount)
+	if workerCount <= 1 {
+		for _, node := range nodes {
+			analyzeInto(node)
 		}
-		fileIndexes = append(fileIndexes, idx)
+		return
 	}
 
-	if len(fileIndexes) == 0 {
-		return nil
-	}
-
-	workerCount := normalizeWorkerCount(len(fileIndexes), configuredWorkerCount)
-	if workerCount == 1 {
-		analyzed := make(map[int]fileAnalysisResult, len(fileIndexes))
-		for _, idx := range fileIndexes {
-			analyzed[idx] = analyzeFileEntry(parentPath, entries[idx])
-		}
-		return analyzed
-	}
-
-	tasks := make(chan int, len(fileIndexes))
-	results := make(chan indexedFileAnalysisResult, len(fileIndexes))
-
+	tasks := make(chan *TreeNode)
 	var wg sync.WaitGroup
 	for worker := 0; worker < workerCount; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for idx := range tasks {
-				results <- indexedFileAnalysisResult{
-					index:  idx,
-					result: analyzeFileEntry(parentPath, entries[idx]),
-				}
+			for node := range tasks {
+				analyzeInto(node)
 			}
 		}()
 	}
-
-	for _, idx := range fileIndexes {
-		tasks <- idx
+	for _, node := range nodes {
+		tasks <- node
 	}
 	close(tasks)
-
 	wg.Wait()
-	close(results)
-
-	analyzed := make(map[int]fileAnalysisResult, len(fileIndexes))
-	for item := range results {
-		analyzed[item.index] = item.result
-	}
-
-	return analyzed
 }
 
 func normalizeWorkerCount(fileCount int, configuredWorkerCount int) int {
@@ -203,20 +178,14 @@ func normalizeWorkerCount(fileCount int, configuredWorkerCount int) int {
 	return workerCount
 }
 
-func analyzeFileEntry(parentPath string, entry os.DirEntry) fileAnalysisResult {
-	name := entry.Name()
-	fullPath := filepath.Join(parentPath, name)
-
-	fileNode := &TreeNode{Name: name, Path: fullPath, IsDir: false}
-	metrics, supported, analyzeErr := AnalyzeFile(fullPath)
+func analyzeInto(node *TreeNode) {
+	metrics, supported, err := AnalyzeFile(node.Path)
 	if supported {
-		fileNode.Metrics = metrics
+		node.Metrics = metrics
 	}
-	if analyzeErr != nil {
-		fileNode.Warning = analyzeErr.Error()
+	if err != nil {
+		node.Warning = err.Error()
 	}
-
-	return fileAnalysisResult{node: fileNode, supported: supported}
 }
 
 func pruneUnsupportedDirectories(node *TreeNode) bool {
