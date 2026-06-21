@@ -8,10 +8,14 @@
 // (complexity x churn), detects duplicate code across files, and builds an import
 // dependency graph with fan-in/fan-out and cycle detection.
 //
-// Go is parsed with the standard library go/ast. Python, JavaScript, JSX,
-// TypeScript and TSX are parsed with tree-sitter. Because the tree-sitter
-// grammars are C, building any program that imports this package requires cgo:
-// set CGO_ENABLED=1 and have a C compiler (gcc or clang) on PATH.
+// Go is parsed with the standard library go/ast. A broad set of other languages
+// (Python, JavaScript/JSX, TypeScript/TSX, Rust, Java, C, C++, C#, Ruby, PHP,
+// Bash, Scala, CSS, HTML, JSON) is parsed with tree-sitter and bundled by
+// default. Any additional tree-sitter grammar can be added at startup with
+// RegisterLanguage; it is analyzed by a generic heuristic adapter (best-effort
+// complexity; Python/JS/TS use higher-fidelity hand-tuned specs). Because the
+// tree-sitter grammars are C, building any program that imports this package
+// requires cgo: set CGO_ENABLED=1 and have a C compiler (gcc or clang) on PATH.
 //
 // The simplest entry point is Inspect, which runs everything and returns a
 // single Report:

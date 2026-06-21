@@ -70,18 +70,46 @@ also exported for finer control.
 Source is parsed into real syntax trees, not matched with regexes:
 
 - **Go** — the standard library `go/ast`.
-- **Python, JavaScript, JSX, TypeScript, TSX** — tree-sitter grammars via the
-  official [`github.com/tree-sitter/go-tree-sitter`](https://github.com/tree-sitter/go-tree-sitter)
+- **Everything else** — tree-sitter grammars via the official
+  [`github.com/tree-sitter/go-tree-sitter`](https://github.com/tree-sitter/go-tree-sitter)
   bindings.
 
 ## Supported Languages
 
-- JavaScript (`.js`, `.mjs`, `.cjs`)
-- JSX (`.jsx`)
-- TypeScript (`.ts`)
-- TSX (`.tsx`)
-- Python (`.py`)
-- Go (`.go`)
+Bundled by default: **Go, Python, JavaScript, JSX, TypeScript, TSX, Rust, Java,
+C, C++, C#, Ruby, PHP, Bash, Scala, CSS, HTML, JSON**
+(`.go .py .js .mjs .cjs .jsx .ts .tsx .rs .java .c .h .cc .cpp .cxx .hpp .cs .rb
+.sh .bash .scala .sc .css .html .htm .json`).
+
+Go uses `go/ast`; Python and the JS/TS family have hand-tuned tree-sitter specs;
+the rest use a **generic heuristic adapter**. **Any other tree-sitter grammar can
+be added** with [`RegisterLanguage`](#adding-languages) — it is analyzed by the
+same generic adapter (best-effort complexity; functions, line breakdown, and
+comments work across grammars).
+
+## Adding languages
+
+Bring any tree-sitter grammar (a `bindings/go` module) and register it at startup:
+
+```go
+import (
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	tszig "github.com/tree-sitter-grammars/tree-sitter-zig/bindings/go"
+	"github.com/miguelbravo7/code-inspector/inspector"
+)
+
+func init() {
+	inspector.RegisterLanguage(inspector.LanguageConfig{
+		Name:       "zig",
+		Grammar:    sitter.NewLanguage(tszig.Language()),
+		Extensions: []string{".zig"},
+		// Optional: refine accuracy with Hints{FunctionKinds, DecisionKinds, ...}.
+	})
+}
+```
+
+The CLI's bundled set is fixed at build time; `RegisterLanguage` is for programs
+that embed the `inspector` package (or a custom build of the CLI).
 
 ## Metrics
 

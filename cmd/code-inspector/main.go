@@ -46,7 +46,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Usage: code-inspector [flags] <directory>")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Recursively prints a file tree with per-file code metrics.")
-		fmt.Fprintln(stderr, "Supported file types: .js, .jsx, .ts, .tsx, .py, .go")
+		fmt.Fprintln(stderr, "Supported file types: "+strings.Join(inspector.SupportedExtensions(), " "))
 		fmt.Fprintln(stderr)
 		flags.PrintDefaults()
 	}

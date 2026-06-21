@@ -293,7 +293,7 @@ func tsNormalizedTokens(grammar *sitter.Language, source []byte) []dupToken {
 
 func normalizeTSLeaf(n *sitter.Node, src []byte) (string, bool) {
 	t := n.Kind()
-	if t == "comment" {
+	if isCommentKind(t) {
 		return "", false
 	}
 	if n.IsNamed() {

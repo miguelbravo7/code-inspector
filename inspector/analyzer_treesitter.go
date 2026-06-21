@@ -24,7 +24,6 @@ const (
 type tsSpec struct {
 	language     string
 	grammar      *sitter.Language
-	commentType  string
 	isFunction   func(nodeType string) bool
 	functionName func(n *sitter.Node, src []byte) (name, signature string)
 	paramCount   func(n *sitter.Node) int
@@ -77,7 +76,7 @@ func (a treeSitterAnalyzer) Analyze(source []byte) (*FileMetrics, error) {
 func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMetrics, comments *[]lineSpan, h *halsteadAccumulator) {
 	t := n.Kind()
 
-	if t == a.spec.commentType {
+	if isCommentKind(t) {
 		metrics.TodoCount += countTodoMarkers(n.Utf8Text(src))
 		start := n.StartPosition()
 		end := n.EndPosition()
@@ -119,7 +118,7 @@ func tsLeafToken(n *sitter.Node, src []byte) (token string, operand bool, ok boo
 		return "", false, false
 	}
 	t := n.Kind()
-	if t == "comment" {
+	if isCommentKind(t) {
 		return "", false, false
 	}
 	if n.IsNamed() {
@@ -203,12 +202,18 @@ func namedNonComment(n *sitter.Node) int {
 	}
 	count := 0
 	for i := 0; i < int(n.NamedChildCount()); i++ {
-		if n.NamedChild(uint(i)).Kind() == "comment" {
+		if isCommentKind(n.NamedChild(uint(i)).Kind()) {
 			continue
 		}
 		count++
 	}
 	return count
+}
+
+// isCommentKind reports whether a tree-sitter node kind denotes a comment.
+// Grammars use "comment", "line_comment", "block_comment", etc.
+func isCommentKind(kind string) bool {
+	return kind == "comment" || strings.Contains(kind, "comment")
 }
 
 func fieldContent(n *sitter.Node, field string, src []byte) string {
@@ -242,9 +247,8 @@ func pythonSpec() tsSpec {
 	}
 
 	return tsSpec{
-		language:    "python",
-		grammar:     sitter.NewLanguage(tspython.Language()),
-		commentType: "comment",
+		language: "python",
+		grammar:  sitter.NewLanguage(tspython.Language()),
 		isFunction: func(t string) bool {
 			return t == "function_definition"
 		},
@@ -371,9 +375,8 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 	}
 
 	return tsSpec{
-		language:    language,
-		grammar:     grammar,
-		commentType: "comment",
+		language: language,
+		grammar:  grammar,
 		isFunction: func(t string) bool {
 			_, ok := functionTypes[t]
 			return ok
