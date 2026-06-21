@@ -54,11 +54,12 @@ func BuildTree(rootPath string, cfg Config) (*TreeNode, error) {
 	}
 
 	root := &TreeNode{
-		Name:  info.Name(),
-		Path:  absRoot,
-		IsDir: true,
+		Name:    info.Name(),
+		Path:    absRoot,
+		RelPath: ".",
+		IsDir:   true,
 	}
-	if err := walkTree(root, cfg); err != nil {
+	if err := walkTree(root, cfg, absRoot); err != nil {
 		return nil, err
 	}
 	if cfg.SupportedOnly {
@@ -67,7 +68,7 @@ func BuildTree(rootPath string, cfg Config) (*TreeNode, error) {
 	return root, nil
 }
 
-func walkTree(parent *TreeNode, cfg Config) error {
+func walkTree(parent *TreeNode, cfg Config, rootPath string) error {
 	entries, err := os.ReadDir(parent.Path)
 	if err != nil {
 		return fmt.Errorf("read directory %q: %w", parent.Path, err)
@@ -92,8 +93,8 @@ func walkTree(parent *TreeNode, cfg Config) error {
 			if isExcludedDir(name, cfg.ExcludedDirs) || isExcludedPath(name, fullPath, cfg.ExcludePatterns) {
 				continue
 			}
-			dirNode := &TreeNode{Name: name, Path: fullPath, IsDir: true}
-			if err := walkTree(dirNode, cfg); err != nil {
+			dirNode := &TreeNode{Name: name, Path: fullPath, RelPath: relPath(rootPath, fullPath), IsDir: true}
+			if err := walkTree(dirNode, cfg, rootPath); err != nil {
 				dirNode.Warning = err.Error()
 			}
 			parent.Children = append(parent.Children, dirNode)
@@ -112,6 +113,7 @@ func walkTree(parent *TreeNode, cfg Config) error {
 		if cfg.SupportedOnly && !analyzed.supported {
 			continue
 		}
+		analyzed.node.RelPath = relPath(rootPath, analyzed.node.Path)
 		parent.Children = append(parent.Children, analyzed.node)
 	}
 
@@ -235,6 +237,14 @@ func pruneUnsupportedDirectories(node *TreeNode) bool {
 	}
 	node.Children = kept
 	return len(node.Children) > 0
+}
+
+func relPath(rootPath, fullPath string) string {
+	rel, err := filepath.Rel(rootPath, fullPath)
+	if err != nil {
+		return filepath.ToSlash(fullPath)
+	}
+	return filepath.ToSlash(rel)
 }
 
 func isExcludedDir(name string, excluded map[string]struct{}) bool {

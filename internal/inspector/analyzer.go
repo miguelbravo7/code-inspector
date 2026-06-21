@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-type analyzerFunc func(source []byte) (*FileMetrics, error)
+// LanguageAnalyzer extracts metrics from the source of a single language.
+type LanguageAnalyzer interface {
+	Analyze(source []byte) (*FileMetrics, error)
+}
 
 var supportedExtensions = map[string]string{
 	".js":  "javascript",
@@ -17,17 +20,20 @@ var supportedExtensions = map[string]string{
 	".cjs": "javascript",
 	".jsx": "jsx",
 	".ts":  "typescript",
-	".tsx": "typescript",
+	".tsx": "tsx",
 	".py":  "python",
 	".go":  "go",
 }
 
-var languageAnalyzers = map[string]analyzerFunc{
-	"go":         analyzeGoSource,
-	"python":     analyzePythonSource,
-	"javascript": func(source []byte) (*FileMetrics, error) { return analyzeJavaScriptLikeSource(source, "javascript") },
-	"jsx":        func(source []byte) (*FileMetrics, error) { return analyzeJavaScriptLikeSource(source, "jsx") },
-	"typescript": func(source []byte) (*FileMetrics, error) { return analyzeJavaScriptLikeSource(source, "typescript") },
+// languageAnalyzers maps a language to its analyzer. Go uses the standard
+// library AST; every other language is parsed with tree-sitter.
+var languageAnalyzers = map[string]LanguageAnalyzer{
+	"go":         goAnalyzer{},
+	"python":     newTreeSitterAnalyzer(pythonSpec()),
+	"javascript": newTreeSitterAnalyzer(javascriptSpec()),
+	"jsx":        newTreeSitterAnalyzer(javascriptSpec()),
+	"typescript": newTreeSitterAnalyzer(typescriptSpec()),
+	"tsx":        newTreeSitterAnalyzer(tsxSpec()),
 }
 
 // AnalyzeFile extracts metrics for supported source files.
@@ -44,23 +50,29 @@ func AnalyzeFile(path string) (*FileMetrics, bool, error) {
 		return nil, true, fmt.Errorf("read file %q: %w", path, err)
 	}
 
-	analyzer, found := languageAnalyzers[language]
-	if !found {
-		return nil, false, nil
-	}
-
-	metrics, err := analyzer(source)
+	metrics, err := analyzeSource(language, source)
 	if metrics == nil {
 		metrics = &FileMetrics{Language: language}
 	}
 	metrics.Language = language
 	metrics.LineCount = countPhysicalLines(source)
+	applyFunctionRollups(metrics)
 	sortFunctions(metrics.Functions)
 
 	if err != nil {
 		return metrics, true, err
 	}
 	return metrics, true, nil
+}
+
+// analyzeSource dispatches to the analyzer registered for the language. It is
+// the single entry point used by AnalyzeFile and the tests.
+func analyzeSource(language string, source []byte) (*FileMetrics, error) {
+	analyzer, found := languageAnalyzers[language]
+	if !found {
+		return &FileMetrics{Language: language}, nil
+	}
+	return analyzer.Analyze(source)
 }
 
 func sortFunctions(functions []FunctionInfo) {
@@ -92,4 +104,11 @@ func countPhysicalLines(source []byte) int {
 func isSupportedExtension(path string) bool {
 	_, ok := supportedExtensions[strings.ToLower(filepath.Ext(path))]
 	return ok
+}
+
+func clampLineCount(startLine, endLine int) int {
+	if startLine <= 0 || endLine < startLine {
+		return 1
+	}
+	return endLine - startLine + 1
 }

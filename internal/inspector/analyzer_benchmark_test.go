@@ -6,87 +6,34 @@ import (
 	"testing"
 )
 
-func BenchmarkAnalyzeHotspots(b *testing.B) {
-	goSource := []byte(buildGoBenchmarkSource(240))
-	pythonSource := []byte(buildPythonBenchmarkSource(320))
-	typescriptSource := []byte(buildTypeScriptBenchmarkSource(280))
-
-	b.Run("go", func(b *testing.B) {
-		b.ReportAllocs()
-		b.SetBytes(int64(len(goSource)))
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			metrics, err := analyzeGoSource(goSource)
-			if err != nil {
-				b.Fatalf("analyzeGoSource returned error: %v", err)
-			}
-			if metrics == nil {
-				b.Fatalf("analyzeGoSource returned nil metrics")
-			}
-		}
-	})
-
-	b.Run("python", func(b *testing.B) {
-		b.ReportAllocs()
-		b.SetBytes(int64(len(pythonSource)))
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			metrics, err := analyzePythonSource(pythonSource)
-			if err != nil {
-				b.Fatalf("analyzePythonSource returned error: %v", err)
-			}
-			if metrics == nil {
-				b.Fatalf("analyzePythonSource returned nil metrics")
-			}
-		}
-	})
-
-	b.Run("typescript", func(b *testing.B) {
-		b.ReportAllocs()
-		b.SetBytes(int64(len(typescriptSource)))
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			metrics, err := analyzeJavaScriptLikeSource(typescriptSource, "typescript")
-			if err != nil {
-				b.Fatalf("analyzeJavaScriptLikeSource returned error: %v", err)
-			}
-			if metrics == nil {
-				b.Fatalf("analyzeJavaScriptLikeSource returned nil metrics")
-			}
-		}
-	})
-}
-
-func BenchmarkEstimateJSFunctionLineCount(b *testing.B) {
-	source := buildTypeScriptBenchmarkSource(400)
-	lines := strings.Split(source, "\n")
-	startLines := jsFunctionStartLines(lines)
-	if len(startLines) == 0 {
-		b.Fatalf("expected at least one function start line")
+func BenchmarkAnalyzeSources(b *testing.B) {
+	cases := []struct {
+		name     string
+		language string
+		source   []byte
+	}{
+		{"go", "go", []byte(buildGoBenchmarkSource(240))},
+		{"python", "python", []byte(buildPythonBenchmarkSource(320))},
+		{"typescript", "typescript", []byte(buildTypeScriptBenchmarkSource(280))},
 	}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	idx := 0
-	for i := 0; i < b.N; i++ {
-		_ = estimateJSFunctionLineCount(lines, startLines[idx])
-		idx++
-		if idx >= len(startLines) {
-			idx = 0
-		}
+	for _, tc := range cases {
+		tc := tc
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.source)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				metrics, err := analyzeSource(tc.language, tc.source)
+				if err != nil {
+					b.Fatalf("analyzeSource(%q) returned error: %v", tc.language, err)
+				}
+				if metrics == nil {
+					b.Fatalf("analyzeSource(%q) returned nil metrics", tc.language)
+				}
+			}
+		})
 	}
-}
-
-func jsFunctionStartLines(lines []string) []int {
-	starts := make([]int, 0, len(lines)/4)
-	for idx, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "function ") || strings.HasPrefix(trimmed, "export function ") {
-			starts = append(starts, idx+1)
-		}
-	}
-	return starts
 }
 
 func buildGoBenchmarkSource(functionCount int) string {

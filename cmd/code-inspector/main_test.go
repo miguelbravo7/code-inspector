@@ -41,8 +41,15 @@ func TestRunJSONFormat(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
 		t.Fatalf("expected valid JSON output, got error: %v\noutput: %s", err, stdout.String())
 	}
-	if decoded["Name"] == nil {
-		t.Fatalf("expected JSON output to contain Name field, got: %v", decoded)
+	root, ok := decoded["root"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected JSON output to contain root object, got: %v", decoded)
+	}
+	if root["Name"] == nil {
+		t.Fatalf("expected root to contain Name field, got: %v", root)
+	}
+	if decoded["summary"] == nil {
+		t.Fatalf("expected JSON output to contain summary, got: %v", decoded)
 	}
 }
 

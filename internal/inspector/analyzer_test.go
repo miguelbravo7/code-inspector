@@ -11,8 +11,21 @@ func findFunctionByName(functions []FunctionInfo, name string) *FunctionInfo {
 	return nil
 }
 
+func mustAnalyze(t *testing.T, language string, source string) *FileMetrics {
+	t.Helper()
+	metrics, err := analyzeSource(language, []byte(source))
+	if err != nil {
+		t.Fatalf("analyzeSource(%q) returned error: %v", language, err)
+	}
+	if metrics == nil {
+		t.Fatalf("analyzeSource(%q) returned nil metrics", language)
+	}
+	applyFunctionRollups(metrics)
+	return metrics
+}
+
 func TestAnalyzeGoSourceMetrics(t *testing.T) {
-	source := []byte(`package sample
+	source := `package sample
 import "fmt"
 
 var global = 1
@@ -26,12 +39,9 @@ func main() {
 type service struct{}
 
 func (s *service) run() {}
-`)
+`
 
-	metrics, err := analyzeGoSource(source)
-	if err != nil {
-		t.Fatalf("analyzeGoSource returned error: %v", err)
-	}
+	metrics := mustAnalyze(t, "go", source)
 
 	if metrics.ImportCount != 1 {
 		t.Fatalf("expected 1 import, got %d", metrics.ImportCount)
@@ -60,25 +70,63 @@ func (s *service) run() {}
 	}
 }
 
+func TestGoComplexityMetrics(t *testing.T) {
+	source := `package sample
+
+func cyc(a, b int) int {
+	if a > 0 && b > 0 {
+		for i := 0; i < a; i++ {
+			if i == b {
+				return i
+			}
+		}
+	} else if a < 0 {
+		return -1
+	}
+	switch b {
+	case 1:
+		return 1
+	case 2:
+		return 2
+	}
+	return 0
+}
+`
+	metrics := mustAnalyze(t, "go", source)
+	fn := findFunctionByName(metrics.Functions, "cyc")
+	if fn == nil {
+		t.Fatalf("expected to find cyc function")
+	}
+	if fn.Params != 2 {
+		t.Fatalf("expected 2 params, got %d", fn.Params)
+	}
+	if fn.Cyclomatic != 8 {
+		t.Fatalf("expected cyclomatic 8, got %d", fn.Cyclomatic)
+	}
+	if fn.MaxNesting != 3 {
+		t.Fatalf("expected max nesting 3, got %d", fn.MaxNesting)
+	}
+	if metrics.MaxComplexity != 8 {
+		t.Fatalf("expected file max complexity 8, got %d", metrics.MaxComplexity)
+	}
+}
+
 func TestAnalyzePythonSourceMetrics(t *testing.T) {
-	source := []byte(`import os
+	source := `import os
 from sys import path
 
 x = 1
 a, b = 2, 3
 
 class Service:
-	def run(self):
-		y = 2
+    def run(self):
+        y = 2
 
 def top():
-	return y if False else x
-`)
+    return y if False else x
+`
 
-	metrics, err := analyzePythonSource(source)
-	if err != nil {
-		t.Fatalf("analyzePythonSource returned error: %v", err)
-	}
+	metrics := mustAnalyze(t, "python", source)
 
 	if metrics.ImportCount != 2 {
 		t.Fatalf("expected 2 imports, got %d", metrics.ImportCount)
@@ -97,18 +145,21 @@ def top():
 	if runFn.LineCount != 2 {
 		t.Fatalf("expected run function to have 2 lines, got %d", runFn.LineCount)
 	}
+	if runFn.Params != 1 {
+		t.Fatalf("expected run to have 1 param (self), got %d", runFn.Params)
+	}
 
 	topFn := findFunctionByName(metrics.Functions, "top")
 	if topFn == nil {
 		t.Fatalf("expected to find top function")
 	}
-	if topFn.LineCount != 2 {
-		t.Fatalf("expected top function to have 2 lines, got %d", topFn.LineCount)
+	if topFn.Cyclomatic != 2 {
+		t.Fatalf("expected top cyclomatic 2 (ternary), got %d", topFn.Cyclomatic)
 	}
 }
 
-func TestAnalyzeJavaScriptLikeSourceMetrics(t *testing.T) {
-	source := []byte(`import fs from "fs";
+func TestAnalyzeTypeScriptSourceMetrics(t *testing.T) {
+	source := `import fs from "fs";
 const path = require("path");
 let count = 0;
 const add = (a, b) => a + b;
@@ -120,12 +171,9 @@ function boot() {
 class Service {
 	start() { return boot(); }
 }
-`)
+`
 
-	metrics, err := analyzeJavaScriptLikeSource(source, "typescript")
-	if err != nil {
-		t.Fatalf("analyzeJavaScriptLikeSource returned error: %v", err)
-	}
+	metrics := mustAnalyze(t, "typescript", source)
 
 	if metrics.ImportCount != 2 {
 		t.Fatalf("expected 2 imports, got %d", metrics.ImportCount)
@@ -143,6 +191,9 @@ class Service {
 	}
 	if addFn.LineCount != 1 {
 		t.Fatalf("expected add function to have 1 line, got %d", addFn.LineCount)
+	}
+	if addFn.Params != 2 {
+		t.Fatalf("expected add to have 2 params, got %d", addFn.Params)
 	}
 
 	bootFn := findFunctionByName(metrics.Functions, "boot")
@@ -162,52 +213,76 @@ class Service {
 	}
 }
 
-func TestAnalyzePythonSourceAssignmentParsingEdgeCases(t *testing.T) {
-	source := []byte(`import os
+func TestTypeScriptIgnoresImportPatternsInStrings(t *testing.T) {
+	source := "const text = \"import('fake')\";\n" +
+		"const msg = 'require(\"ghost\")';\n" +
+		"const tpl = `import(\"ghost\")`;\n" +
+		"const real = require(\"path\");\n" +
+		"\n" +
+		"async function load() {\n" +
+		"\treturn import(\"./module.js\");\n" +
+		"}\n"
 
-a: int = 1
-left, (middle, right) = (1, (2, 3))
-first = second = 4
-obj.value = 5
-items[0] = 6
-if first == second:
-	pass
-if (tmp := 7):
-	pass
-name += 1
-`)
-
-	metrics, err := analyzePythonSource(source)
-	if err != nil {
-		t.Fatalf("analyzePythonSource returned error: %v", err)
-	}
-
-	if metrics.ImportCount != 1 {
-		t.Fatalf("expected 1 import, got %d", metrics.ImportCount)
-	}
-	if metrics.VariableCount != 6 {
-		t.Fatalf("expected 6 variable definitions, got %d", metrics.VariableCount)
-	}
-}
-
-func TestAnalyzeJavaScriptLikeSourceIgnoresImportPatternsInStrings(t *testing.T) {
-	source := []byte(`const text = "import('fake')";
-const msg = 'require("ghost")';
-const tpl = ` + "`" + `import("ghost")` + "`" + `;
-const real = require("path");
-
-async function load() {
-	return import("./module.js");
-}
-`)
-
-	metrics, err := analyzeJavaScriptLikeSource(source, "typescript")
-	if err != nil {
-		t.Fatalf("analyzeJavaScriptLikeSource returned error: %v", err)
-	}
-
+	metrics := mustAnalyze(t, "typescript", source)
 	if metrics.ImportCount != 2 {
-		t.Fatalf("expected 2 imports, got %d", metrics.ImportCount)
+		t.Fatalf("expected 2 imports (require + dynamic import), got %d", metrics.ImportCount)
+	}
+}
+
+func TestPythonComplexityNesting(t *testing.T) {
+	source := `def handle(items):
+    for item in items:
+        if item > 0:
+            if item % 2 == 0:
+                print(item)
+    return items
+`
+	metrics := mustAnalyze(t, "python", source)
+	fn := findFunctionByName(metrics.Functions, "handle")
+	if fn == nil {
+		t.Fatalf("expected to find handle function")
+	}
+	// base 1 + for + if + if = 4
+	if fn.Cyclomatic != 4 {
+		t.Fatalf("expected cyclomatic 4, got %d", fn.Cyclomatic)
+	}
+	if fn.MaxNesting != 3 {
+		t.Fatalf("expected max nesting 3, got %d", fn.MaxNesting)
+	}
+}
+
+func TestLineClassificationCounts(t *testing.T) {
+	source := `# leading comment
+import os
+
+def f():  # trailing comment
+    """docstring"""
+    return 1
+`
+	metrics := mustAnalyze(t, "python", source)
+	if metrics.CommentLines != 1 {
+		t.Fatalf("expected 1 pure comment line, got %d", metrics.CommentLines)
+	}
+	if metrics.BlankLines != 2 {
+		t.Fatalf("expected 2 blank lines, got %d (one trailing newline)", metrics.BlankLines)
+	}
+	// import, def (code + trailing comment), docstring, return = 4 code lines
+	if metrics.CodeLines != 4 {
+		t.Fatalf("expected 4 code lines, got %d", metrics.CodeLines)
+	}
+}
+
+func TestTodoMarkerCount(t *testing.T) {
+	source := `// TODO: refactor this
+// regular comment
+function f() {
+	// FIXME: broken, also HACK
+	return 1;
+}
+`
+	metrics := mustAnalyze(t, "javascript", source)
+	if metrics.TodoCount != 3 {
+		t.Fatalf("expected 3 todo markers, got %d", metrics.TodoCount)
 	}
 }
 

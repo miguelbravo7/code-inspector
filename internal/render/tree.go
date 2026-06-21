@@ -78,8 +78,23 @@ func formatNode(node *inspector.TreeNode) string {
 	}
 
 	if node.Metrics != nil {
-		metrics := node.Metrics
-		label += fmt.Sprintf(" [lines:%d imports:%d vars:%d funcs:%d]", metrics.LineCount, metrics.ImportCount, metrics.VariableCount, len(metrics.Functions))
+		m := node.Metrics
+		parts := []string{
+			fmt.Sprintf("lines:%d", m.LineCount),
+			fmt.Sprintf("code:%d", m.CodeLines),
+			fmt.Sprintf("cyc:%d", m.Cyclomatic),
+			fmt.Sprintf("funcs:%d", len(m.Functions)),
+		}
+		if m.TodoCount > 0 {
+			parts = append(parts, fmt.Sprintf("todo:%d", m.TodoCount))
+		}
+		if node.Churn > 0 {
+			parts = append(parts, fmt.Sprintf("churn:%d", node.Churn))
+		}
+		if node.Hotspot > 0 {
+			parts = append(parts, fmt.Sprintf("hot:%.0f", node.Hotspot))
+		}
+		label += " [" + strings.Join(parts, " ") + "]"
 	}
 
 	if node.Warning != "" {
@@ -105,12 +120,18 @@ func buildFunctionLayout(functions []inspector.FunctionInfo) functionFormatLayou
 
 func formatFunction(fn inspector.FunctionInfo, leftWidth int) string {
 	left := formatFunctionLeft(fn)
-	rightParts := make([]string, 0, 2)
+	rightParts := make([]string, 0, 5)
 	if fn.Line > 0 {
 		rightParts = append(rightParts, fmt.Sprintf("line %d", fn.Line))
 	}
 	if fn.LineCount > 0 {
 		rightParts = append(rightParts, fmt.Sprintf("lines %d", fn.LineCount))
+	}
+	if fn.Cyclomatic > 0 {
+		rightParts = append(rightParts, fmt.Sprintf("cyc %d", fn.Cyclomatic))
+	}
+	if fn.Cognitive > 0 {
+		rightParts = append(rightParts, fmt.Sprintf("cog %d", fn.Cognitive))
 	}
 
 	if len(rightParts) == 0 {

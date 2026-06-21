@@ -22,6 +22,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var supportedOnly bool
 	var outputFormat string
 	var analyzerWorkers int
+	var noSummary bool
+	var noGit bool
+	var topN int
 
 	flags := flag.NewFlagSet("code-inspector", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -30,6 +33,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.BoolVar(&supportedOnly, "supported-only", false, "Show only supported source files")
 	flags.StringVar(&outputFormat, "format", "tree", "Output format: tree or json")
 	flags.IntVar(&analyzerWorkers, "workers", 1, "File analysis workers per directory (default 1 = sequential, 0 = auto)")
+	flags.BoolVar(&noSummary, "no-summary", false, "Skip the ranked summary of hotspots and complex functions")
+	flags.BoolVar(&noGit, "no-git", false, "Disable git churn and hotspot scoring")
+	flags.IntVar(&topN, "top", 10, "Number of entries per ranked summary list")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: code-inspector [flags] <directory>")
 		fmt.Fprintln(stderr)
@@ -64,6 +70,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		ExcludePatterns: append([]string(nil), excludeValues...),
 		SupportedOnly:   supportedOnly,
 		AnalyzerWorkers: analyzerWorkers,
+		GitChurn:        !noGit,
 	}
 
 	tree, err := inspector.BuildTree(targetPath, cfg)
@@ -72,16 +79,35 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	gitChurn := false
+	if !noGit {
+		gitChurn = inspector.ComputeChurn(tree, targetPath)
+	}
+
 	switch strings.ToLower(strings.TrimSpace(outputFormat)) {
 	case "", "tree":
 		if err := render.PrintTree(tree, stdout); err != nil {
 			fmt.Fprintf(stderr, "error rendering tree: %v\n", err)
 			return 1
 		}
+		if !noSummary {
+			summary := inspector.BuildSummary(tree, topN, gitChurn)
+			if err := render.PrintSummary(summary, stdout); err != nil {
+				fmt.Fprintf(stderr, "error rendering summary: %v\n", err)
+				return 1
+			}
+		}
 	case "json":
+		report := struct {
+			Root    *inspector.TreeNode `json:"root"`
+			Summary inspector.Summary   `json:"summary"`
+		}{
+			Root:    tree,
+			Summary: inspector.BuildSummary(tree, topN, gitChurn),
+		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(tree); err != nil {
+		if err := encoder.Encode(report); err != nil {
 			fmt.Fprintf(stderr, "error rendering json: %v\n", err)
 			return 1
 		}
