@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"code-inspector/internal/inspector"
-	"code-inspector/internal/render"
+	"github.com/miguelbravo7/code-inspector/inspector"
+	"github.com/miguelbravo7/code-inspector/internal/render"
 )
 
 func main() {

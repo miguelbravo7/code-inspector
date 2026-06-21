@@ -1,14 +1,12 @@
 package inspector
 
 import (
-	"context"
 	"strings"
 
-	sitter "github.com/smacker/go-tree-sitter"
-	"github.com/smacker/go-tree-sitter/javascript"
-	"github.com/smacker/go-tree-sitter/python"
-	"github.com/smacker/go-tree-sitter/typescript/tsx"
-	"github.com/smacker/go-tree-sitter/typescript/typescript"
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	tsjs "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tspython "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tsts "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
 // cogKind classifies how a node contributes to cognitive complexity.
@@ -48,11 +46,13 @@ func newTreeSitterAnalyzer(spec tsSpec) treeSitterAnalyzer {
 func (a treeSitterAnalyzer) Analyze(source []byte) (*FileMetrics, error) {
 	parser := sitter.NewParser()
 	defer parser.Close()
-	parser.SetLanguage(a.spec.grammar)
-
-	tree, err := parser.ParseCtx(context.Background(), nil, source)
-	if err != nil {
+	if err := parser.SetLanguage(a.spec.grammar); err != nil {
 		return nil, err
+	}
+
+	tree := parser.Parse(source, nil)
+	if tree == nil {
+		return &FileMetrics{Language: a.spec.language}, nil
 	}
 	defer tree.Close()
 
@@ -75,12 +75,12 @@ func (a treeSitterAnalyzer) Analyze(source []byte) (*FileMetrics, error) {
 // collect walks the whole tree once, accumulating file-level counts and
 // enumerating functions.
 func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMetrics, comments *[]lineSpan, h *halsteadAccumulator) {
-	t := n.Type()
+	t := n.Kind()
 
 	if t == a.spec.commentType {
-		metrics.TodoCount += countTodoMarkers(n.Content(src))
-		start := n.StartPoint()
-		end := n.EndPoint()
+		metrics.TodoCount += countTodoMarkers(n.Utf8Text(src))
+		start := n.StartPosition()
+		end := n.EndPosition()
 		*comments = append(*comments, lineSpan{
 			startRow: int(start.Row), startCol: int(start.Column),
 			endRow: int(end.Row), endCol: int(end.Column),
@@ -106,7 +106,7 @@ func (a treeSitterAnalyzer) collect(n *sitter.Node, src []byte, metrics *FileMet
 	}
 
 	for i := 0; i < int(n.ChildCount()); i++ {
-		a.collect(n.Child(i), src, metrics, comments, h)
+		a.collect(n.Child(uint(i)), src, metrics, comments, h)
 	}
 }
 
@@ -118,12 +118,12 @@ func tsLeafToken(n *sitter.Node, src []byte) (token string, operand bool, ok boo
 	if n.ChildCount() != 0 {
 		return "", false, false
 	}
-	t := n.Type()
+	t := n.Kind()
 	if t == "comment" {
 		return "", false, false
 	}
 	if n.IsNamed() {
-		return n.Content(src), true, true
+		return n.Utf8Text(src), true, true
 	}
 	if strings.TrimSpace(t) == "" {
 		return "", false, false
@@ -133,8 +133,8 @@ func tsLeafToken(n *sitter.Node, src []byte) (token string, operand bool, ok boo
 
 func (a treeSitterAnalyzer) functionInfo(n *sitter.Node, src []byte) FunctionInfo {
 	name, signature := a.spec.functionName(n, src)
-	start := n.StartPoint()
-	end := n.EndPoint()
+	start := n.StartPosition()
+	end := n.EndPosition()
 	lineCount := int(end.Row) - int(start.Row) + 1
 	cx, halstead := a.functionMetrics(n, src)
 	return FunctionInfo{
@@ -160,8 +160,8 @@ func (a treeSitterAnalyzer) functionMetrics(fn *sitter.Node, src []byte) (comple
 	var walk func(n *sitter.Node, depth int)
 	walk = func(n *sitter.Node, depth int) {
 		for i := 0; i < int(n.ChildCount()); i++ {
-			child := n.Child(i)
-			if child.IsNamed() && a.spec.isFunction(child.Type()) {
+			child := n.Child(uint(i))
+			if child.IsNamed() && a.spec.isFunction(child.Kind()) {
 				continue // nested function scored separately
 			}
 
@@ -203,7 +203,7 @@ func namedNonComment(n *sitter.Node) int {
 	}
 	count := 0
 	for i := 0; i < int(n.NamedChildCount()); i++ {
-		if n.NamedChild(i).Type() == "comment" {
+		if n.NamedChild(uint(i)).Kind() == "comment" {
 			continue
 		}
 		count++
@@ -216,7 +216,7 @@ func fieldContent(n *sitter.Node, field string, src []byte) string {
 		return ""
 	}
 	if child := n.ChildByFieldName(field); child != nil {
-		return child.Content(src)
+		return child.Utf8Text(src)
 	}
 	return ""
 }
@@ -243,7 +243,7 @@ func pythonSpec() tsSpec {
 
 	return tsSpec{
 		language:    "python",
-		grammar:     python.GetLanguage(),
+		grammar:     sitter.NewLanguage(tspython.Language()),
 		commentType: "comment",
 		isFunction: func(t string) bool {
 			return t == "function_definition"
@@ -259,37 +259,37 @@ func pythonSpec() tsSpec {
 			return namedNonComment(n.ChildByFieldName("parameters"))
 		},
 		importDelta: func(n *sitter.Node, src []byte) int {
-			switch n.Type() {
+			switch n.Kind() {
 			case "import_statement", "import_from_statement", "future_import_statement":
 				return 1
 			}
 			return 0
 		},
 		importSpecs: func(n *sitter.Node, src []byte) []string {
-			switch n.Type() {
+			switch n.Kind() {
 			case "import_statement":
 				var specs []string
 				for i := 0; i < int(n.NamedChildCount()); i++ {
-					child := n.NamedChild(i)
-					switch child.Type() {
+					child := n.NamedChild(uint(i))
+					switch child.Kind() {
 					case "dotted_name", "relative_import":
-						specs = append(specs, child.Content(src))
+						specs = append(specs, child.Utf8Text(src))
 					case "aliased_import":
 						if name := child.ChildByFieldName("name"); name != nil {
-							specs = append(specs, name.Content(src))
+							specs = append(specs, name.Utf8Text(src))
 						}
 					}
 				}
 				return specs
 			case "import_from_statement":
 				if module := n.ChildByFieldName("module_name"); module != nil {
-					return []string{module.Content(src)}
+					return []string{module.Utf8Text(src)}
 				}
 			}
 			return nil
 		},
 		varBindings: func(n *sitter.Node, src []byte) int {
-			switch n.Type() {
+			switch n.Kind() {
 			case "assignment":
 				return countTargetIdentifiers(n.ChildByFieldName("left"))
 			case "named_expression":
@@ -298,16 +298,16 @@ func pythonSpec() tsSpec {
 			return 0
 		},
 		decision: func(n *sitter.Node, src []byte) int {
-			if _, ok := decisions[n.Type()]; ok {
+			if _, ok := decisions[n.Kind()]; ok {
 				return 1
 			}
 			return 0
 		},
 		cognitive: func(n *sitter.Node, src []byte) cogKind {
-			if _, ok := nesting[n.Type()]; ok {
+			if _, ok := nesting[n.Kind()]; ok {
 				return cogNesting
 			}
-			if _, ok := flat[n.Type()]; ok {
+			if _, ok := flat[n.Kind()]; ok {
 				return cogFlat
 			}
 			return cogNone
@@ -321,7 +321,7 @@ func countTargetIdentifiers(n *sitter.Node) int {
 	if n == nil {
 		return 0
 	}
-	switch n.Type() {
+	switch n.Kind() {
 	case "identifier":
 		return 1
 	case "attribute", "subscript", "comment":
@@ -329,16 +329,20 @@ func countTargetIdentifiers(n *sitter.Node) int {
 	}
 	count := 0
 	for i := 0; i < int(n.NamedChildCount()); i++ {
-		count += countTargetIdentifiers(n.NamedChild(i))
+		count += countTargetIdentifiers(n.NamedChild(uint(i)))
 	}
 	return count
 }
 
 // --- JavaScript / TypeScript ---------------------------------------------
 
-func javascriptSpec() tsSpec { return jsLikeSpec("javascript", javascript.GetLanguage()) }
-func typescriptSpec() tsSpec { return jsLikeSpec("typescript", typescript.GetLanguage()) }
-func tsxSpec() tsSpec        { return jsLikeSpec("tsx", tsx.GetLanguage()) }
+func javascriptSpec() tsSpec {
+	return jsLikeSpec("javascript", sitter.NewLanguage(tsjs.Language()))
+}
+func typescriptSpec() tsSpec {
+	return jsLikeSpec("typescript", sitter.NewLanguage(tsts.LanguageTypescript()))
+}
+func tsxSpec() tsSpec { return jsLikeSpec("tsx", sitter.NewLanguage(tsts.LanguageTSX())) }
 
 func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 	functionTypes := map[string]struct{}{
@@ -359,7 +363,7 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 	booleanOps := map[string]struct{}{"&&": {}, "||": {}, "??": {}}
 
 	isBooleanBinary := func(n *sitter.Node, src []byte) bool {
-		if n.Type() != "binary_expression" {
+		if n.Kind() != "binary_expression" {
 			return false
 		}
 		_, ok := booleanOps[fieldContent(n, "operator", src)]
@@ -385,7 +389,7 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 			signature := fieldContent(n, "parameters", src)
 			if signature == "" {
 				if p := n.ChildByFieldName("parameter"); p != nil {
-					signature = "(" + p.Content(src) + ")"
+					signature = "(" + p.Utf8Text(src) + ")"
 				}
 			}
 			return name, signature
@@ -400,7 +404,7 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 			return 0
 		},
 		importDelta: func(n *sitter.Node, src []byte) int {
-			switch n.Type() {
+			switch n.Kind() {
 			case "import_statement":
 				return 1
 			case "call_expression":
@@ -408,31 +412,31 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 				if fn == nil {
 					return 0
 				}
-				if fn.Type() == "import" {
+				if fn.Kind() == "import" {
 					return 1
 				}
-				if fn.Type() == "identifier" && fn.Content(src) == "require" {
+				if fn.Kind() == "identifier" && fn.Utf8Text(src) == "require" {
 					return 1
 				}
 			}
 			return 0
 		},
 		importSpecs: func(n *sitter.Node, src []byte) []string {
-			switch n.Type() {
+			switch n.Kind() {
 			case "import_statement":
 				if source := n.ChildByFieldName("source"); source != nil {
-					return []string{stripQuotes(source.Content(src))}
+					return []string{stripQuotes(source.Utf8Text(src))}
 				}
 			case "call_expression":
 				fn := n.ChildByFieldName("function")
 				if fn == nil {
 					return nil
 				}
-				if fn.Type() == "import" || (fn.Type() == "identifier" && fn.Content(src) == "require") {
+				if fn.Kind() == "import" || (fn.Kind() == "identifier" && fn.Utf8Text(src) == "require") {
 					if args := n.ChildByFieldName("arguments"); args != nil {
 						for i := 0; i < int(args.NamedChildCount()); i++ {
-							if arg := args.NamedChild(i); arg.Type() == "string" {
-								return []string{stripQuotes(arg.Content(src))}
+							if arg := args.NamedChild(uint(i)); arg.Kind() == "string" {
+								return []string{stripQuotes(arg.Utf8Text(src))}
 							}
 						}
 					}
@@ -441,13 +445,13 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 			return nil
 		},
 		varBindings: func(n *sitter.Node, src []byte) int {
-			if n.Type() == "variable_declarator" {
+			if n.Kind() == "variable_declarator" {
 				return countJSBindingNames(n.ChildByFieldName("name"))
 			}
 			return 0
 		},
 		decision: func(n *sitter.Node, src []byte) int {
-			if _, ok := decisions[n.Type()]; ok {
+			if _, ok := decisions[n.Kind()]; ok {
 				return 1
 			}
 			if isBooleanBinary(n, src) {
@@ -456,10 +460,10 @@ func jsLikeSpec(language string, grammar *sitter.Language) tsSpec {
 			return 0
 		},
 		cognitive: func(n *sitter.Node, src []byte) cogKind {
-			if _, ok := nesting[n.Type()]; ok {
+			if _, ok := nesting[n.Kind()]; ok {
 				return cogNesting
 			}
-			if n.Type() == "else_clause" || isBooleanBinary(n, src) {
+			if n.Kind() == "else_clause" || isBooleanBinary(n, src) {
 				return cogFlat
 			}
 			return cogNone
@@ -472,7 +476,7 @@ func jsDeriveName(n *sitter.Node, src []byte) string {
 	if parent == nil {
 		return ""
 	}
-	switch parent.Type() {
+	switch parent.Kind() {
 	case "variable_declarator", "public_field_definition", "field_definition", "property_signature":
 		return fieldContent(parent, "name", src)
 	case "pair":
@@ -487,7 +491,7 @@ func countJSBindingNames(n *sitter.Node) int {
 	if n == nil {
 		return 0
 	}
-	switch n.Type() {
+	switch n.Kind() {
 	case "identifier", "shorthand_property_identifier_pattern", "shorthand_property_identifier":
 		return 1
 	case "member_expression", "subscript_expression", "comment":
@@ -495,7 +499,7 @@ func countJSBindingNames(n *sitter.Node) int {
 	}
 	count := 0
 	for i := 0; i < int(n.NamedChildCount()); i++ {
-		count += countJSBindingNames(n.NamedChild(i))
+		count += countJSBindingNames(n.NamedChild(uint(i)))
 	}
 	return count
 }

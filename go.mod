@@ -1,9 +1,12 @@
-module code-inspector
+module github.com/miguelbravo7/code-inspector
 
-go 1.22
+go 1.23
 
-require github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
+require (
+	github.com/tree-sitter/go-tree-sitter v0.25.0
+	github.com/tree-sitter/tree-sitter-javascript v0.23.1
+	github.com/tree-sitter/tree-sitter-python v0.23.6
+	github.com/tree-sitter/tree-sitter-typescript v0.23.2
+)
 
-// The javascript grammar is published both inside the main module and as a
-// stale standalone module; exclude the stray one so it resolves from the parent.
-exclude github.com/smacker/go-tree-sitter/javascript v0.0.1
+require github.com/mattn/go-pointer v0.0.1 // indirect

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"code-inspector/internal/inspector"
+	"github.com/miguelbravo7/code-inspector/inspector"
 )
 
 func TestPrintTreeRendersAsciiTreeWithFunctions(t *testing.T) {

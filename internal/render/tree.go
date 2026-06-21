@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"code-inspector/internal/inspector"
+	"github.com/miguelbravo7/code-inspector/inspector"
 )
 
 // PrintTree writes the analyzed directory tree to the provided writer.

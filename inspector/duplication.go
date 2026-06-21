@@ -1,7 +1,6 @@
 package inspector
 
 import (
-	"context"
 	"go/scanner"
 	"go/token"
 	"hash/fnv"
@@ -9,11 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	sitter "github.com/smacker/go-tree-sitter"
-	"github.com/smacker/go-tree-sitter/javascript"
-	"github.com/smacker/go-tree-sitter/python"
-	"github.com/smacker/go-tree-sitter/typescript/tsx"
-	"github.com/smacker/go-tree-sitter/typescript/typescript"
+	sitter "github.com/tree-sitter/go-tree-sitter"
+	tsjs "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tspython "github.com/tree-sitter/tree-sitter-python/bindings/go"
+	tsts "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
 // DefaultDuplicationMinTokens is the default clone window size (in normalized
@@ -230,11 +228,11 @@ func normalizedTokens(language string, source []byte) []dupToken {
 }
 
 var dupGrammars = map[string]*sitter.Language{
-	"python":     python.GetLanguage(),
-	"javascript": javascript.GetLanguage(),
-	"jsx":        javascript.GetLanguage(),
-	"typescript": typescript.GetLanguage(),
-	"tsx":        tsx.GetLanguage(),
+	"python":     sitter.NewLanguage(tspython.Language()),
+	"javascript": sitter.NewLanguage(tsjs.Language()),
+	"jsx":        sitter.NewLanguage(tsjs.Language()),
+	"typescript": sitter.NewLanguage(tsts.LanguageTypescript()),
+	"tsx":        sitter.NewLanguage(tsts.LanguageTSX()),
 }
 
 func goNormalizedTokens(source []byte) []dupToken {
@@ -266,9 +264,11 @@ func goNormalizedTokens(source []byte) []dupToken {
 func tsNormalizedTokens(grammar *sitter.Language, source []byte) []dupToken {
 	parser := sitter.NewParser()
 	defer parser.Close()
-	parser.SetLanguage(grammar)
-	tree, err := parser.ParseCtx(context.Background(), nil, source)
-	if err != nil {
+	if err := parser.SetLanguage(grammar); err != nil {
+		return nil
+	}
+	tree := parser.Parse(source, nil)
+	if tree == nil {
 		return nil
 	}
 	defer tree.Close()
@@ -279,12 +279,12 @@ func tsNormalizedTokens(grammar *sitter.Language, source []byte) []dupToken {
 		count := int(n.ChildCount())
 		if count == 0 {
 			if norm, ok := normalizeTSLeaf(n, source); ok {
-				tokens = append(tokens, dupToken{norm, int(n.StartPoint().Row) + 1})
+				tokens = append(tokens, dupToken{norm, int(n.StartPosition().Row) + 1})
 			}
 			return
 		}
 		for i := 0; i < count; i++ {
-			walk(n.Child(i))
+			walk(n.Child(uint(i)))
 		}
 	}
 	walk(tree.RootNode())
@@ -292,7 +292,7 @@ func tsNormalizedTokens(grammar *sitter.Language, source []byte) []dupToken {
 }
 
 func normalizeTSLeaf(n *sitter.Node, src []byte) (string, bool) {
-	t := n.Type()
+	t := n.Kind()
 	if t == "comment" {
 		return "", false
 	}

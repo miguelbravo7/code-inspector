@@ -1,19 +1,78 @@
 # Code Inspector
 
-A standalone root-level CLI utility to inspect source trees, surface code-quality
-metrics, and rank where improvements pay off the most. It prints a Unicode file
-tree with per-file and per-function metrics, followed by a ranked summary of
-hotspots and the most complex functions.
+A Go library and CLI to inspect source trees, surface code-quality metrics, and
+rank where improvements pay off the most. It builds a metrics tree with per-file
+and per-function data, then a ranked summary of hotspots, complex functions,
+low-maintainability files, duplication, and the import dependency graph.
+
+Module path: `github.com/miguelbravo7/code-inspector`
+
+## Requirements
+
+This package parses non-Go languages with [tree-sitter](https://tree-sitter.github.io),
+whose grammars are C — so **cgo is required**. Any build that imports this
+package (or the CLI) needs `CGO_ENABLED=1` and a C compiler on `PATH`:
+
+- **Linux/macOS:** a system `gcc`/`clang` is usually already present.
+- **Windows:** install a mingw-w64 toolchain and point Go at it:
+
+  ```bash
+  go env -w CGO_ENABLED=1
+  go env -w CC=C:\path\to\mingw64\bin\gcc.exe
+  ```
+
+`CGO_ENABLED=0` and pure cross-compilation are not supported.
+
+## Install
+
+CLI:
+
+```bash
+go install github.com/miguelbravo7/code-inspector/cmd/code-inspector@latest
+```
+
+Library:
+
+```bash
+go get github.com/miguelbravo7/code-inspector/inspector
+```
+
+## Library usage
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/miguelbravo7/code-inspector/inspector"
+)
+
+func main() {
+	report, err := inspector.Inspect("./path/to/project", inspector.Options{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, h := range report.Summary.TopHotspots {
+		fmt.Printf("%s\thot=%.0f cyc=%d churn=%d\n", h.Path, h.Hotspot, h.Cyclomatic, h.Churn)
+	}
+}
+```
+
+`Inspect` runs the full pipeline and returns a `*Report` (metrics tree, summary,
+duplication, dependency graph). The individual stages — `BuildTree`,
+`ComputeChurn`, `BuildSummary`, `DetectDuplication`, `BuildDependencyGraph` — are
+also exported for finer control.
 
 ## Parsing
 
 Source is parsed into real syntax trees, not matched with regexes:
 
 - **Go** — the standard library `go/ast`.
-- **Python, JavaScript, JSX, TypeScript, TSX** — [tree-sitter](https://tree-sitter.github.io)
-  grammars via [`github.com/smacker/go-tree-sitter`](https://github.com/smacker/go-tree-sitter).
-
-Because tree-sitter grammars are C, **cgo is required** (see [Building](#building)).
+- **Python, JavaScript, JSX, TypeScript, TSX** — tree-sitter grammars via the
+  official [`github.com/tree-sitter/go-tree-sitter`](https://github.com/tree-sitter/go-tree-sitter)
+  bindings.
 
 ## Supported Languages
 
@@ -60,28 +119,18 @@ After the tree, a summary aggregates totals and ranks:
   packages for Go). Reports **fan-in** (most depended-on = wide blast radius),
   **fan-out** (most dependencies = fragile), and **dependency cycles**.
 
-## Building
-
-cgo and a C compiler are required.
-
-- **Linux/macOS:** a system `gcc`/`clang` is usually already present.
-- **Windows:** install a mingw-w64 toolchain and point Go at it, e.g.
-
-  ```bash
-  go env -w CGO_ENABLED=1
-  go env -w CC=C:\path\to\mingw64\bin\gcc.exe
-  ```
-
-Build:
-
-```bash
-go build ./cmd/code-inspector
-```
-
 ## Usage
+
+Run from a clone (see [Requirements](#requirements) for the cgo toolchain):
 
 ```bash
 go run ./cmd/code-inspector -- ./path/to/directory
+```
+
+Or, once installed:
+
+```bash
+code-inspector ./path/to/directory
 ```
 
 ### Flags
@@ -103,25 +152,25 @@ go run ./cmd/code-inspector -- ./path/to/directory
 Run all inspector benchmarks:
 
 ```bash
-go test ./internal/inspector -run ^$ -bench . -benchmem
+go test ./inspector -run ^$ -bench . -benchmem
 ```
 
 Compare traversal concurrency against sequential baseline:
 
 ```bash
-go test ./internal/inspector -run ^$ -bench BuildTreeTraversal -benchmem
+go test ./inspector -run ^$ -bench BuildTreeTraversal -benchmem
 ```
 
 Run the traversal benchmark matrix (supported-only true/false across multiple file counts):
 
 ```bash
-go test ./internal/inspector -run ^$ -bench BuildTreeTraversalMatrix -benchmem
+go test ./inspector -run ^$ -bench BuildTreeTraversalMatrix -benchmem
 ```
 
 Run per-language analyzer benchmarks:
 
 ```bash
-go test ./internal/inspector -run ^$ -bench AnalyzeSources -benchmem
+go test ./inspector -run ^$ -bench AnalyzeSources -benchmem
 ```
 
 ## Example
@@ -166,3 +215,7 @@ Summary
   Most depended-on (high fan-in = wide blast radius):
     src/app.ts                                   fan-in 2    fan-out 1
 ```
+
+## License
+
+[MIT](LICENSE)

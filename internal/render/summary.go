@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"code-inspector/internal/inspector"
+	"github.com/miguelbravo7/code-inspector/inspector"
 )
 
 // PrintSummary writes a ranked, aggregate view designed to surface the highest
