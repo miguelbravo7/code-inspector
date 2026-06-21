@@ -1,11 +1,44 @@
 # Code Inspector
 
-A Go library and CLI to inspect source trees, surface code-quality metrics, and
-rank where improvements pay off the most. It builds a metrics tree with per-file
-and per-function data, then a ranked summary of hotspots, complex functions,
-low-maintainability files, duplication, and the import dependency graph.
+**A Go CLI and library that finds your highest-value refactoring targets — by ranking code on complexity × git churn, cognitive complexity, duplication, the Maintainability Index, and the import dependency graph, across any tree-sitter language.**
+
+[![License: MIT](https://img.shields.io/github/license/miguelbravo7/code-inspector)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/tag/miguelbravo7/code-inspector?label=release)](https://github.com/miguelbravo7/code-inspector/tags)
+[![Go Reference](https://pkg.go.dev/badge/github.com/miguelbravo7/code-inspector.svg)](https://pkg.go.dev/github.com/miguelbravo7/code-inspector)
+![Go version](https://img.shields.io/github/go-mod/go-version/miguelbravo7/code-inspector)
+
+`code-inspector` measures **code complexity**, finds **technical-debt hotspots**, detects **duplicate code**, maps the **dependency graph**, and ranks **where refactoring pays off most** — in one tool. It builds a metrics tree with per-file and per-function data, then a ranked summary of hotspots, complex functions, low-maintainability files, duplication, and import dependencies.
+
+Think of it as an `scc`/`gocyclo`/`jscpd`-style metrics tool that *also* ranks **complexity × git-churn hotspots** — the "Your Code as a Crime Scene" prioritization (Adam Tornhill / CodeScene) — but free, offline, multi-language, and scriptable. It is both a **command-line tool** and an importable **Go package**, and it ships a ready-to-use **[Claude Code skill](#claude-code-skill)** for AI-assisted code review.
 
 Module path: `github.com/miguelbravo7/code-inspector`
+
+## Why code-inspector
+
+Most metrics tools answer one question. This one answers "**what should I fix first?**" by combining the signals that matter:
+
+- **Hotspots = complexity × git churn.** Code that is both complex *and* changed often is where bugs and effort concentrate — the highest-value refactor targets. This is the headline feature, and few free CLIs combine it with the rest of the metrics below.
+- **All-in-one breadth.** Cyclomatic + cognitive complexity, nesting depth, Halstead, Maintainability Index, **token-normalized duplicate detection**, and an **import dependency graph** (fan-in / fan-out + cycle detection) — instead of stitching together `gocyclo` + `jscpd` + `madge`.
+- **Truly multi-language via tree-sitter.** Real syntax trees, not regexes. 18 languages bundled, and `RegisterLanguage` adds *any* tree-sitter grammar — with metric hints auto-derived from the grammar's own vocabulary.
+- **CLI *and* Go library.** Drive it from the shell, or embed the `inspector` package to build a quality gate or CI check.
+
+Honest scope: it is a metrics CLI/library plus a Claude skill — not a server, dashboard, or LLM analyzer. Go and Python/JS/TS are high-fidelity; other languages use a generic adapter (treat their absolute numbers as directional). It is cgo, so building it needs a C compiler — see [Requirements](#requirements).
+
+## Quickstart
+
+Install the CLI (needs the cgo toolchain — see [Requirements](#requirements)):
+
+```bash
+go install github.com/miguelbravo7/code-inspector/cmd/code-inspector@latest
+```
+
+Run it on a directory:
+
+```bash
+code-inspector ./path/to/directory
+```
+
+You get a Unicode file tree annotated with per-file/per-function metrics, followed by a ranked **Summary** of hotspots, complex functions, low-maintainability files, duplication, and the dependency graph. See the full [example output](#example) below.
 
 ## Requirements
 
@@ -37,7 +70,11 @@ Library:
 go get github.com/miguelbravo7/code-inspector/inspector
 ```
 
-## Library usage
+## As a Go library
+
+Beyond the CLI, `code-inspector` is an importable Go package for computing code
+metrics — useful for building a custom quality gate, a CI check, or your own
+dashboard:
 
 ```go
 package main
@@ -63,28 +100,24 @@ func main() {
 `Inspect` runs the full pipeline and returns a `*Report` (metrics tree, summary,
 duplication, dependency graph). The individual stages — `BuildTree`,
 `ComputeChurn`, `BuildSummary`, `DetectDuplication`, `BuildDependencyGraph` — are
-also exported for finer control.
+also exported for finer control. Full API on
+[pkg.go.dev](https://pkg.go.dev/github.com/miguelbravo7/code-inspector/inspector).
 
-## Parsing
+## Supported languages
 
-Source is parsed into real syntax trees, not matched with regexes:
+Source is parsed into real syntax trees, not matched with regexes — Go via the
+standard library `go/ast`, everything else via
+[tree-sitter](https://github.com/tree-sitter/go-tree-sitter).
 
-- **Go** — the standard library `go/ast`.
-- **Everything else** — tree-sitter grammars via the official
-  [`github.com/tree-sitter/go-tree-sitter`](https://github.com/tree-sitter/go-tree-sitter)
-  bindings.
-
-## Supported Languages
-
-Bundled by default: **Go, Python, JavaScript, JSX, TypeScript, TSX, Rust, Java,
-C, C++, C#, Ruby, PHP, Bash, Scala, CSS, HTML, JSON**
+Bundled by default (18 languages): **Go, Python, JavaScript, JSX, TypeScript,
+TSX, Rust, Java, C, C++, C#, Ruby, PHP, Bash, Scala, CSS, HTML, JSON**
 (`.go .py .js .mjs .cjs .jsx .ts .tsx .rs .java .c .h .cc .cpp .cxx .hpp .cs .rb
 .sh .bash .scala .sc .css .html .htm .json`).
 
 Go uses `go/ast`; Python and the JS/TS family have hand-tuned tree-sitter specs;
-the rest use a **generic adapter** that **auto-derives its hints from the
-grammar itself** — at registration it introspects the grammar's node-kind and
-field vocabulary (`NodeKindForId`, `FieldNameForId`, …) and classifies kinds into
+the rest use a **generic adapter** that **auto-derives its hints from the grammar
+itself** — at registration it introspects the grammar's node-kind and field
+vocabulary (`NodeKindForId`, `FieldNameForId`, …) and classifies kinds into
 functions / decisions / nesting / imports, on top of a curated cross-language
 base. So a newly registered grammar adapts to its own vocabulary rather than
 relying on a fixed list. **Any other tree-sitter grammar can be added** with
@@ -118,12 +151,13 @@ that embed the `inspector` package (or a custom build of the CLI).
 
 ## Claude Code skill
 
-This repo bundles a [Claude Code](https://claude.com/claude-code) skill at
-[`.claude/skills/code-hotspots`](.claude/skills/code-hotspots/SKILL.md) that
-drives the tool for a first-pass code-health review: it runs the inspector,
-detects and excludes generated code, finds the metrics that stand out for that
-codebase, and proposes prioritized, evidence-backed refactoring actions. It is
-available automatically when working in this repo; to use it anywhere, copy the
+This repo ships a ready-to-use [Claude Code](https://claude.com/claude-code)
+**AI skill** at
+[`.claude/skills/code-hotspots`](.claude/skills/code-hotspots/SKILL.md). It drives
+the tool for a first-pass **code-health review**: runs the inspector, detects and
+excludes generated code, finds the metrics that stand out for that codebase, and
+proposes **prioritized, evidence-backed refactoring actions**. It is available
+automatically when working in this repo; to use it anywhere, copy the
 `code-hotspots` directory into `~/.claude/skills/`.
 
 ## Metrics
@@ -133,7 +167,7 @@ available automatically when working in this repo; to use it anywhere, copy the
 - Physical line count, plus a **code / comment / blank** breakdown
 - Import count and variable-binding count
 - **Cyclomatic complexity** (sum across functions) and the highest single-function value
-- **Halstead** volume/difficulty/effort and a 0-100 **Maintainability Index**
+- **Halstead** volume/difficulty/effort and a 0–100 **Maintainability Index**
 - **TODO/FIXME/HACK/XXX** marker count
 - **Git churn** (commits touching the file) and a **hotspot score** (`complexity × churn`)
 
@@ -142,7 +176,7 @@ available automatically when working in this repo; to use it anywhere, copy the
 - Name, signature hint, start line, line count
 - **Cyclomatic complexity** (McCabe: decision points + 1)
 - **Cognitive complexity** (SonarSource-style approximation that penalizes nesting)
-- **Maintainability Index** (0-100)
+- **Maintainability Index** (0–100)
 - Max nesting depth and parameter count (available in JSON output)
 
 ### Ranked summary
@@ -163,8 +197,8 @@ After the tree, a summary aggregates totals and ranks:
   other languages use a generic, precision-first resolver (relative paths and
   unique path-suffix matches, qualified to the importer's language — ambiguous or
   external imports are never turned into edges). Reports **fan-in** (most
-  depended-on = wide blast radius),
-  **fan-out** (most dependencies = fragile), and **dependency cycles**.
+  depended-on = wide blast radius), **fan-out** (most dependencies = fragile),
+  and **dependency cycles**.
 
 ## Usage
 
@@ -186,13 +220,30 @@ code-inspector ./path/to/directory
 - `-no-default-excludes`: disable defaults (`.git`, `node_modules`, `dist`, `build`, `out`, `vendor`)
 - `-supported-only`: include only supported file types in the output tree
 - `-format=tree|json`: choose human-readable tree output or JSON output (JSON includes the ranked summary)
-- `-workers=N`: file-analysis workers per directory (default `1` sequential, `0` auto)
+- `-workers=N`: file-analysis workers (default `1` sequential, `0` auto)
 - `-no-summary`: skip the ranked summary
 - `-no-git`: disable git churn and hotspot scoring
 - `-top=N`: entries per ranked summary list (default `10`)
 - `-no-dup`: disable duplicate-code detection
 - `-dup-min-tokens=N`: minimum token run length for a clone (default `50`)
 - `-no-deps`: disable the import dependency graph
+
+## Comparison / alternatives
+
+`code-inspector` overlaps with several focused tools but combines their jobs and
+adds churn-based prioritization:
+
+| Tools | Their focus | What `code-inspector` adds |
+|---|---|---|
+| [`scc`](https://github.com/boyter/scc), [`tokei`](https://github.com/XAMPPRocky/tokei) | fast line counting | per-function complexity, hotspots, duplication, dependency graph |
+| [`gocyclo`](https://github.com/fzipp/gocyclo), [`gocognit`](https://github.com/uudashr/gocognit), [`lizard`](https://github.com/terryyin/lizard), [`radon`](https://github.com/rubik/radon) | complexity only | + cognitive/Halstead/Maintainability Index, **churn hotspots**, duplication, dependency graph, more languages |
+| [`jscpd`](https://github.com/kucherenko/jscpd), PMD CPD | duplication only | + complexity, hotspots, dependency graph |
+| [`madge`](https://github.com/pahen/madge), [`dependency-cruiser`](https://github.com/sverweij/dependency-cruiser) | dependency graph only | + complexity, hotspots, duplication |
+| SonarQube, Code Climate, [CodeScene](https://codescene.com) | hosted platforms / dashboards | a **free, offline CLI + Go library** with the complexity × churn "crime scene" prioritization CodeScene popularized — no server required |
+
+If you want a command-line, open-source take on hotspot analysis, or one tool
+that covers what `gocyclo`, `jscpd`, and `madge` each do separately, that's the
+niche this fills.
 
 ## Benchmarks
 
@@ -202,27 +253,14 @@ Run all inspector benchmarks:
 go test ./inspector -run ^$ -bench . -benchmem
 ```
 
-Compare traversal concurrency against sequential baseline:
-
-```bash
-go test ./inspector -run ^$ -bench BuildTreeTraversal -benchmem
-```
-
-Run the traversal benchmark matrix (supported-only true/false across multiple file counts):
-
-```bash
-go test ./inspector -run ^$ -bench BuildTreeTraversalMatrix -benchmem
-```
-
-Run per-language analyzer benchmarks (hand-tuned go/python/typescript, and the
+Per-language analyzer benchmarks (hand-tuned go/python/typescript, plus the
 generic adapter on rust/java):
 
 ```bash
 go test ./inspector -run ^$ -bench 'AnalyzeSources|AnalyzeGeneric' -benchmem
 ```
 
-Benchmark the registration introspection, dependency graph, duplication, and the
-full pipeline:
+Registration introspection, dependency graph, duplication, and the full pipeline:
 
 ```bash
 go test ./inspector -run ^$ -bench 'GenericSpecBuild|BuildDependencyGraph|DetectDuplication|Inspect' -benchmem
@@ -235,12 +273,12 @@ go test ./inspector -run ^$ -bench 'GenericSpecBuild|BuildDependencyGraph|Detect
 > `go/ast` analyzer is still several times faster per byte than the tree-sitter
 > ones; per-language registration introspection is a one-time ~0.3 ms.
 >
-> Traversal uses a single global worker pool over the whole file set (not a pool
-> per directory). Even so, concurrency (`-workers=0`) is *slower* than the
-> sequential default (`-workers=1`) for a tree-sitter workload: every node access
-> is a cgo call, and that per-node cgo overhead under many goroutines outweighs
-> the multi-core gain. Sequential is therefore the default; the pool helps only
-> when parsing is cheap relative to I/O.
+> Traversal uses a single global worker pool over the whole file set. Even so,
+> concurrency (`-workers=0`) is *slower* than the sequential default
+> (`-workers=1`) for a tree-sitter workload: every node access is a cgo call, and
+> that per-node cgo overhead under many goroutines outweighs the multi-core gain.
+> Sequential is therefore the default; the pool helps only when parsing is cheap
+> relative to I/O.
 
 ## Example
 
