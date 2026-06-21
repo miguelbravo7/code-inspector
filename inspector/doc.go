@@ -12,10 +12,11 @@
 // (Python, JavaScript/JSX, TypeScript/TSX, Rust, Java, C, C++, C#, Ruby, PHP,
 // Bash, Scala, CSS, HTML, JSON) is parsed with tree-sitter and bundled by
 // default. Any additional tree-sitter grammar can be added at startup with
-// RegisterLanguage; it is analyzed by a generic heuristic adapter (best-effort
-// complexity; Python/JS/TS use higher-fidelity hand-tuned specs). Because the
-// tree-sitter grammars are C, building any program that imports this package
-// requires cgo: set CGO_ENABLED=1 and have a C compiler (gcc or clang) on PATH.
+// RegisterLanguage; it is analyzed by a generic adapter that auto-derives its
+// metric hints by introspecting the grammar's node-kind and field vocabulary
+// (Python/JS/TS use higher-fidelity hand-tuned specs). Because the tree-sitter
+// grammars are C, building any program that imports this package requires cgo:
+// set CGO_ENABLED=1 and have a C compiler (gcc or clang) on PATH.
 //
 // The simplest entry point is Inspect, which runs everything and returns a
 // single Report:

@@ -52,6 +52,7 @@ func BuildDependencyGraph(root *TreeNode, scanRoot string, topN int) DependencyR
 	for _, f := range files {
 		knownFiles[f.rel] = struct{}{}
 	}
+	idx := buildDepIndex(files)
 
 	moduleRoot, modulePath := findGoModule(scanRoot)
 
@@ -76,7 +77,7 @@ func BuildDependencyGraph(root *TreeNode, scanRoot string, topN int) DependencyR
 		}
 		nodes[from] = struct{}{}
 		for _, spec := range f.imports {
-			to, resolved := resolveImport(f, spec, knownFiles, moduleRoot, modulePath)
+			to, resolved := resolveImport(f, spec, knownFiles, moduleRoot, modulePath, idx)
 			if !resolved {
 				report.ExternalImports++
 				continue
@@ -148,17 +149,20 @@ func nodeID(f depFileInfo, moduleRoot, modulePath string) (string, bool) {
 	return modulePath + "/" + dir, true
 }
 
-func resolveImport(f depFileInfo, spec string, knownFiles map[string]struct{}, moduleRoot, modulePath string) (string, bool) {
-	if f.language == "go" {
+func resolveImport(f depFileInfo, spec string, knownFiles map[string]struct{}, moduleRoot, modulePath string, idx depIndex) (string, bool) {
+	switch f.language {
+	case "go":
 		if modulePath == "" || !strings.HasPrefix(spec, modulePath) {
 			return "", false
 		}
 		return spec, true
-	}
-	if f.language == "python" {
+	case "python":
 		return resolvePythonImport(f.rel, spec, knownFiles)
+	case "javascript", "jsx", "typescript", "tsx":
+		return resolveRelativeImport(f.rel, spec, knownFiles)
+	default:
+		return resolveGenericImport(f, spec, idx)
 	}
-	return resolveRelativeImport(f.rel, spec, knownFiles)
 }
 
 // resolveRelativeImport handles JS/TS-style relative specifiers.
@@ -209,6 +213,239 @@ func resolvePythonImport(importerRel, spec string, knownFiles map[string]struct{
 		}
 	}
 	return "", false
+}
+
+// depSuffixCap bounds how many trailing path segments are indexed per file, to
+// keep the suffix index memory linear while covering realistic import depths.
+const depSuffixCap = 6
+
+// depIndex supports precision-first resolution of imports to project files.
+type depIndex struct {
+	byExact    map[string]struct{} // slash rel path -> exists
+	nameSuffix map[string][]string // trailing path suffix (no final ext) -> rel paths
+	pathSuffix map[string][]string // trailing path suffix (with ext) -> rel paths
+	fileLang   map[string]string   // rel path -> language
+	langExts   map[string][]string // language -> its registered extensions
+}
+
+func buildDepIndex(files []depFileInfo) depIndex {
+	idx := depIndex{
+		byExact:    make(map[string]struct{}, len(files)),
+		nameSuffix: make(map[string][]string),
+		pathSuffix: make(map[string][]string),
+		fileLang:   make(map[string]string, len(files)),
+		langExts:   make(map[string][]string),
+	}
+	for _, f := range files {
+		rel := f.rel
+		idx.byExact[rel] = struct{}{}
+		idx.fileLang[rel] = f.language
+
+		segs := strings.Split(rel, "/")
+		addSuffixKeys(idx.pathSuffix, segs, rel)
+
+		nameSegs := append([]string(nil), segs...)
+		last := nameSegs[len(nameSegs)-1]
+		stem := strings.TrimSuffix(last, path.Ext(last))
+		nameSegs[len(nameSegs)-1] = stem
+		addSuffixKeys(idx.nameSuffix, nameSegs, rel)
+
+		// Directory-module conventions: foo/mod.rs, pkg/__init__.py, dir/index.* are
+		// referenced by their directory name, so also index the parent suffixes.
+		switch stem {
+		case "mod", "index", "__init__":
+			if len(nameSegs) >= 2 {
+				addSuffixKeys(idx.nameSuffix, nameSegs[:len(nameSegs)-1], rel)
+			}
+		}
+	}
+	for k, v := range idx.nameSuffix {
+		idx.nameSuffix[k] = dedupStrings(v)
+	}
+	for k, v := range idx.pathSuffix {
+		idx.pathSuffix[k] = dedupStrings(v)
+	}
+
+	for _, ext := range SupportedExtensions() {
+		if entry, ok := lookupByExtension(ext); ok {
+			idx.langExts[entry.name] = append(idx.langExts[entry.name], ext)
+		}
+	}
+	return idx
+}
+
+func addSuffixKeys(m map[string][]string, segs []string, rel string) {
+	start := 0
+	if len(segs) > depSuffixCap {
+		start = len(segs) - depSuffixCap
+	}
+	for i := len(segs) - 1; i >= start; i-- {
+		key := strings.Join(segs[i:], "/")
+		if key != "" {
+			m[key] = append(m[key], rel)
+		}
+	}
+}
+
+func dedupStrings(in []string) []string {
+	if len(in) <= 1 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := in[:0]
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// resolveGenericImport resolves an import specifier for a language without a
+// dedicated resolver. It is precision-first: a path-like specifier resolves
+// relative to the importer (or by unique path-suffix), a name-like (dotted/
+// scoped) specifier resolves by UNIQUE path-suffix within the importer's
+// language family. Anything ambiguous or unmatched is treated as external.
+func resolveGenericImport(f depFileInfo, spec string, idx depIndex) (string, bool) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", false
+	}
+	sep, pathLike := classifySpecifier(spec)
+	if pathLike {
+		return resolvePathLike(f, spec, idx)
+	}
+	return resolveNameLike(f, spec, sep, idx)
+}
+
+func classifySpecifier(spec string) (sep string, pathLike bool) {
+	switch {
+	case strings.HasPrefix(spec, "./"), strings.HasPrefix(spec, "../"), strings.HasPrefix(spec, "/"):
+		return "/", true
+	case strings.Contains(spec, "::"):
+		return "::", false
+	case strings.Contains(spec, "\\"):
+		return "\\", false
+	case strings.Contains(spec, "/"):
+		return "/", true
+	}
+	if dot := strings.LastIndex(spec, "."); dot >= 0 {
+		if hasKnownExtension(spec) {
+			return "/", true // filename.ext
+		}
+		return ".", false // dotted name (e.g. com.example.Foo)
+	}
+	return "", false // single bare token
+}
+
+func resolvePathLike(f depFileInfo, spec string, idx depIndex) (string, bool) {
+	base := path.Dir(f.rel)
+	target := path.Clean(path.Join(base, spec))
+	suffixKey := strings.TrimPrefix(spec, "./")
+
+	exts := []string{""}
+	if !hasKnownExtension(spec) {
+		exts = extensionsForLanguageFamily(f.language, idx)
+	}
+	for _, e := range exts {
+		if _, ok := idx.byExact[target+e]; ok && sameLanguageFamily(idx.fileLang[target+e], f.language) {
+			return target + e, true
+		}
+	}
+	for _, e := range exts {
+		if m := uniqueFamilyMatch(idx.pathSuffix[suffixKey+e], f.language, idx); m != "" {
+			return m, true
+		}
+	}
+	return "", false
+}
+
+func resolveNameLike(f depFileInfo, spec, sep string, idx depIndex) (string, bool) {
+	segs := cleanNameSegments(splitSep(spec, sep))
+	if len(segs) == 0 {
+		return "", false
+	}
+	candidate := strings.Join(segs, "/")
+	if m := uniqueFamilyMatch(idx.nameSuffix[candidate], f.language, idx); m != "" {
+		return m, true
+	}
+	return "", false
+}
+
+func splitSep(spec, sep string) []string {
+	if sep == "" {
+		return []string{spec}
+	}
+	return strings.Split(spec, sep)
+}
+
+// cleanNameSegments trims selector/wildcard tails and leading relativity prefixes
+// (crate/self/super/this) that are not directory components.
+func cleanNameSegments(segs []string) []string {
+	out := make([]string, 0, len(segs))
+	for _, s := range segs {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if strings.ContainsAny(s, "{}*") {
+			break // grouped selectors / wildcards: stop here
+		}
+		out = append(out, s)
+	}
+	noise := map[string]struct{}{"crate": {}, "self": {}, "super": {}, "this": {}, "@": {}}
+	for len(out) > 0 {
+		if _, ok := noise[out[0]]; !ok {
+			break
+		}
+		out = out[1:]
+	}
+	return out
+}
+
+func uniqueFamilyMatch(candidates []string, lang string, idx depIndex) string {
+	match := ""
+	count := 0
+	for _, rel := range candidates {
+		if !sameLanguageFamily(idx.fileLang[rel], lang) {
+			continue
+		}
+		match = rel
+		count++
+	}
+	if count == 1 {
+		return match
+	}
+	return ""
+}
+
+func sameLanguageFamily(a, b string) bool {
+	if a == b {
+		return true
+	}
+	cFamily := func(s string) bool { return s == "c" || s == "cpp" }
+	return cFamily(a) && cFamily(b)
+}
+
+func hasKnownExtension(spec string) bool {
+	ext := strings.ToLower(path.Ext(spec))
+	if ext == "" {
+		return false
+	}
+	_, ok := lookupByExtension(ext)
+	return ok
+}
+
+func extensionsForLanguageFamily(lang string, idx depIndex) []string {
+	var exts []string
+	for l, es := range idx.langExts {
+		if sameLanguageFamily(l, lang) {
+			exts = append(exts, es...)
+		}
+	}
+	return exts
 }
 
 func topStats(nodes map[string]struct{}, fanIn, fanOut map[string]int, topN int, key func(DependencyStat) int) []DependencyStat {

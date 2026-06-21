@@ -82,10 +82,15 @@ C, C++, C#, Ruby, PHP, Bash, Scala, CSS, HTML, JSON**
 .sh .bash .scala .sc .css .html .htm .json`).
 
 Go uses `go/ast`; Python and the JS/TS family have hand-tuned tree-sitter specs;
-the rest use a **generic heuristic adapter**. **Any other tree-sitter grammar can
-be added** with [`RegisterLanguage`](#adding-languages) — it is analyzed by the
-same generic adapter (best-effort complexity; functions, line breakdown, and
-comments work across grammars).
+the rest use a **generic adapter** that **auto-derives its hints from the
+grammar itself** — at registration it introspects the grammar's node-kind and
+field vocabulary (`NodeKindForId`, `FieldNameForId`, …) and classifies kinds into
+functions / decisions / nesting / imports, on top of a curated cross-language
+base. So a newly registered grammar adapts to its own vocabulary rather than
+relying on a fixed list. **Any other tree-sitter grammar can be added** with
+[`RegisterLanguage`](#adding-languages) and gets functions, complexity, line
+breakdown, comments, and — where imports resolve to project files — dependency
+edges.
 
 ## Adding languages
 
@@ -143,8 +148,12 @@ After the tree, a summary aggregates totals and ranks:
   a structure-preserving token stream (identifiers and literals normalized) so
   renamed or retyped copies still match; clones of at least `-dup-min-tokens`
   tokens are reported with their locations.
-- **Dependency graph** — intra-project import graph (files for JS/TS/Python,
-  packages for Go). Reports **fan-in** (most depended-on = wide blast radius),
+- **Dependency graph** — intra-project import graph across languages (packages
+  for Go; files for everything else). Go/Python/JS use dedicated resolvers;
+  other languages use a generic, precision-first resolver (relative paths and
+  unique path-suffix matches, qualified to the importer's language — ambiguous or
+  external imports are never turned into edges). Reports **fan-in** (most
+  depended-on = wide blast radius),
   **fan-out** (most dependencies = fragile), and **dependency cycles**.
 
 ## Usage
