@@ -204,11 +204,27 @@ Run the traversal benchmark matrix (supported-only true/false across multiple fi
 go test ./inspector -run ^$ -bench BuildTreeTraversalMatrix -benchmem
 ```
 
-Run per-language analyzer benchmarks:
+Run per-language analyzer benchmarks (hand-tuned go/python/typescript, and the
+generic adapter on rust/java):
 
 ```bash
-go test ./inspector -run ^$ -bench AnalyzeSources -benchmem
+go test ./inspector -run ^$ -bench 'AnalyzeSources|AnalyzeGeneric' -benchmem
 ```
+
+Benchmark the registration introspection, dependency graph, duplication, and the
+full pipeline:
+
+```bash
+go test ./inspector -run ^$ -bench 'GenericSpecBuild|BuildDependencyGraph|DetectDuplication|Inspect' -benchmem
+```
+
+> Notes (measured locally, GOMAXPROCS=16): the standard-library `go/ast` analyzer
+> is roughly an order of magnitude faster per byte than the tree-sitter analyzers,
+> which dominate runtime (most time is in cgo `Utf8Text`/walk). Per-language
+> registration introspection is a one-time ~0.3 ms and negligible. The
+> per-directory concurrent worker pool (`-workers=0`) does **not** speed up a mixed
+> cgo workload — it is marginally slower than the sequential default
+> (`-workers=1`), which is why sequential is the default.
 
 ## Example
 
