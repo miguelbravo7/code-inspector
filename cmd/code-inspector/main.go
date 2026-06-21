@@ -25,6 +25,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var noSummary bool
 	var noGit bool
 	var topN int
+	var noDup bool
+	var dupMinTokens int
 
 	flags := flag.NewFlagSet("code-inspector", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -36,6 +38,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.BoolVar(&noSummary, "no-summary", false, "Skip the ranked summary of hotspots and complex functions")
 	flags.BoolVar(&noGit, "no-git", false, "Disable git churn and hotspot scoring")
 	flags.IntVar(&topN, "top", 10, "Number of entries per ranked summary list")
+	flags.BoolVar(&noDup, "no-dup", false, "Disable duplicate-code detection")
+	flags.IntVar(&dupMinTokens, "dup-min-tokens", inspector.DefaultDuplicationMinTokens, "Minimum token run length for duplicate-code detection")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: code-inspector [flags] <directory>")
 		fmt.Fprintln(stderr)
@@ -96,14 +100,26 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "error rendering summary: %v\n", err)
 				return 1
 			}
+			if !noDup {
+				dup := inspector.DetectDuplication(tree, dupMinTokens, topN)
+				if err := render.PrintDuplication(dup, stdout); err != nil {
+					fmt.Fprintf(stderr, "error rendering duplication: %v\n", err)
+					return 1
+				}
+			}
 		}
 	case "json":
 		report := struct {
-			Root    *inspector.TreeNode `json:"root"`
-			Summary inspector.Summary   `json:"summary"`
+			Root        *inspector.TreeNode          `json:"root"`
+			Summary     inspector.Summary            `json:"summary"`
+			Duplication *inspector.DuplicationReport `json:"duplication,omitempty"`
 		}{
 			Root:    tree,
 			Summary: inspector.BuildSummary(tree, topN, gitChurn),
+		}
+		if !noDup {
+			dup := inspector.DetectDuplication(tree, dupMinTokens, topN)
+			report.Duplication = &dup
 		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")

@@ -74,6 +74,35 @@ func PrintSummary(summary inspector.Summary, writer io.Writer) error {
 	return nil
 }
 
+// PrintDuplication writes the duplicate-code report.
+func PrintDuplication(report inspector.DuplicationReport, writer io.Writer) error {
+	w := func(format string, args ...interface{}) error {
+		_, err := fmt.Fprintf(writer, format, args...)
+		return err
+	}
+
+	if report.TotalBlocks == 0 {
+		return w("\n  Duplication: none found (>= %d tokens)\n", report.MinTokens)
+	}
+
+	if err := w("\n  Duplication: %d clone blocks, ~%d duplicated lines (>= %d tokens):\n",
+		report.TotalBlocks, report.DuplicatedLines, report.MinTokens); err != nil {
+		return err
+	}
+	for _, b := range report.Blocks {
+		if err := w("    %d tokens / %d lines:\n", b.Tokens, b.Lines); err != nil {
+			return err
+		}
+		if err := w("      %s:%d-%d\n", b.FirstPath, b.FirstStart, b.FirstEnd); err != nil {
+			return err
+		}
+		if err := w("      %s:%d-%d\n", b.OtherPath, b.OtherStart, b.OtherEnd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func truncatePath(path string, width int) string {
 	runes := []rune(path)
 	if len(runes) <= width {
