@@ -3,6 +3,7 @@ package render
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"code-inspector/internal/inspector"
 )
@@ -98,6 +99,57 @@ func PrintDuplication(report inspector.DuplicationReport, writer io.Writer) erro
 		}
 		if err := w("      %s:%d-%d\n", b.OtherPath, b.OtherStart, b.OtherEnd); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// PrintDependency writes the import dependency-graph report.
+func PrintDependency(report inspector.DependencyReport, writer io.Writer) error {
+	w := func(format string, args ...interface{}) error {
+		_, err := fmt.Fprintf(writer, format, args...)
+		return err
+	}
+
+	if report.Nodes == 0 {
+		return nil
+	}
+
+	if err := w("\n  Dependency graph: %d modules, %d internal edges, %d external imports\n",
+		report.Nodes, report.Edges, report.ExternalImports); err != nil {
+		return err
+	}
+
+	if len(report.MostDependedOn) > 0 {
+		if err := w("\n  Most depended-on (high fan-in = wide blast radius):\n"); err != nil {
+			return err
+		}
+		for _, s := range report.MostDependedOn {
+			if err := w("    %-44s fan-in %-4d fan-out %d\n", truncatePath(s.Node, 44), s.FanIn, s.FanOut); err != nil {
+				return err
+			}
+		}
+	}
+
+	if len(report.MostDependencies) > 0 {
+		if err := w("\n  Most dependencies (high fan-out = fragile):\n"); err != nil {
+			return err
+		}
+		for _, s := range report.MostDependencies {
+			if err := w("    %-44s fan-out %-4d fan-in %d\n", truncatePath(s.Node, 44), s.FanOut, s.FanIn); err != nil {
+				return err
+			}
+		}
+	}
+
+	if len(report.Cycles) > 0 {
+		if err := w("\n  Dependency cycles (%d):\n", len(report.Cycles)); err != nil {
+			return err
+		}
+		for _, cycle := range report.Cycles {
+			if err := w("    %s\n", strings.Join(cycle, " -> ")); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

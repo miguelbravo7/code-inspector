@@ -27,6 +27,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var topN int
 	var noDup bool
 	var dupMinTokens int
+	var noDeps bool
 
 	flags := flag.NewFlagSet("code-inspector", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -40,6 +41,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.IntVar(&topN, "top", 10, "Number of entries per ranked summary list")
 	flags.BoolVar(&noDup, "no-dup", false, "Disable duplicate-code detection")
 	flags.IntVar(&dupMinTokens, "dup-min-tokens", inspector.DefaultDuplicationMinTokens, "Minimum token run length for duplicate-code detection")
+	flags.BoolVar(&noDeps, "no-deps", false, "Disable the import dependency graph (fan-in/out + cycles)")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: code-inspector [flags] <directory>")
 		fmt.Fprintln(stderr)
@@ -107,12 +109,20 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 					return 1
 				}
 			}
+			if !noDeps {
+				deps := inspector.BuildDependencyGraph(tree, targetPath, topN)
+				if err := render.PrintDependency(deps, stdout); err != nil {
+					fmt.Fprintf(stderr, "error rendering dependencies: %v\n", err)
+					return 1
+				}
+			}
 		}
 	case "json":
 		report := struct {
-			Root        *inspector.TreeNode          `json:"root"`
-			Summary     inspector.Summary            `json:"summary"`
-			Duplication *inspector.DuplicationReport `json:"duplication,omitempty"`
+			Root         *inspector.TreeNode          `json:"root"`
+			Summary      inspector.Summary            `json:"summary"`
+			Duplication  *inspector.DuplicationReport `json:"duplication,omitempty"`
+			Dependencies *inspector.DependencyReport  `json:"dependencies,omitempty"`
 		}{
 			Root:    tree,
 			Summary: inspector.BuildSummary(tree, topN, gitChurn),
@@ -120,6 +130,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if !noDup {
 			dup := inspector.DetectDuplication(tree, dupMinTokens, topN)
 			report.Duplication = &dup
+		}
+		if !noDeps {
+			deps := inspector.BuildDependencyGraph(tree, targetPath, topN)
+			report.Dependencies = &deps
 		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")

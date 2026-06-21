@@ -31,6 +31,7 @@ Because tree-sitter grammars are C, **cgo is required** (see [Building](#buildin
 - Physical line count, plus a **code / comment / blank** breakdown
 - Import count and variable-binding count
 - **Cyclomatic complexity** (sum across functions) and the highest single-function value
+- **Halstead** volume/difficulty/effort and a 0-100 **Maintainability Index**
 - **TODO/FIXME/HACK/XXX** marker count
 - **Git churn** (commits touching the file) and a **hotspot score** (`complexity × churn`)
 
@@ -39,6 +40,7 @@ Because tree-sitter grammars are C, **cgo is required** (see [Building](#buildin
 - Name, signature hint, start line, line count
 - **Cyclomatic complexity** (McCabe: decision points + 1)
 - **Cognitive complexity** (SonarSource-style approximation that penalizes nesting)
+- **Maintainability Index** (0-100)
 - Max nesting depth and parameter count (available in JSON output)
 
 ### Ranked summary
@@ -49,6 +51,14 @@ After the tree, a summary aggregates totals and ranks:
   both complex *and* changed often. These are the highest-value refactor targets.
   (Falls back to ranking by complexity when git history is unavailable.)
 - **Most complex functions** — ranked by cyclomatic complexity.
+- **Lowest maintainability** — files ranked by Maintainability Index (ascending).
+- **Duplication** — token-level clone blocks across files. Each file is reduced to
+  a structure-preserving token stream (identifiers and literals normalized) so
+  renamed or retyped copies still match; clones of at least `-dup-min-tokens`
+  tokens are reported with their locations.
+- **Dependency graph** — intra-project import graph (files for JS/TS/Python,
+  packages for Go). Reports **fan-in** (most depended-on = wide blast radius),
+  **fan-out** (most dependencies = fragile), and **dependency cycles**.
 
 ## Building
 
@@ -84,6 +94,9 @@ go run ./cmd/code-inspector -- ./path/to/directory
 - `-no-summary`: skip the ranked summary
 - `-no-git`: disable git churn and hotspot scoring
 - `-top=N`: entries per ranked summary list (default `10`)
+- `-no-dup`: disable duplicate-code detection
+- `-dup-min-tokens=N`: minimum token run length for a clone (default `50`)
+- `-no-deps`: disable the import dependency graph
 
 ## Benchmarks
 
@@ -116,13 +129,13 @@ go test ./internal/inspector -run ^$ -bench AnalyzeSources -benchmem
 ```text
 my-project/
 ├── src/
-│   ├── app.ts [lines:42 code:33 cyc:9 funcs:4 churn:7 hot:63]
+│   ├── app.ts [lines:42 code:33 cyc:9 mi:64 funcs:4 churn:7 hot:63]
 │   │   ├── fn: bootstrap | () | line 5 | lines 4 | cyc 1
 │   │   └── fn: loadConfig | (path: string) | line 18 | lines 7 | cyc 4 | cog 6
-│   └── worker.py [lines:31 code:24 cyc:6 funcs:2 todo:1 churn:3 hot:18]
+│   └── worker.py [lines:31 code:24 cyc:6 mi:58 funcs:2 todo:1 churn:3 hot:18]
 │       ├── fn: run | (task) | line 4 | lines 10 | cyc 5 | cog 8
 │       └── fn: helper | () | line 20 | lines 5 | cyc 1
-└── main.go [lines:27 code:21 cyc:4 funcs:2 churn:2 hot:8]
+└── main.go [lines:27 code:21 cyc:4 mi:71 funcs:2 churn:2 hot:8]
     ├── fn: main | () | line 10 | lines 5 | cyc 1
     └── fn: service.start | (ctx context.Context) error | line 16 | lines 3 | cyc 2
 
@@ -138,4 +151,18 @@ Summary
   Most complex functions:
     run                          cyc 5    cog 8     worker.py:4
     loadConfig                   cyc 4    cog 6     src/app.ts:18
+
+  Lowest maintainability (0-100, higher is better):
+    worker.py                                mi 58.0  cyc 6
+    src/app.ts                               mi 64.0  cyc 9
+
+  Duplication: 1 clone blocks, ~6 duplicated lines (>= 50 tokens):
+    52 tokens / 6 lines:
+      src/app.ts:18-23
+      src/legacy.ts:4-9
+
+  Dependency graph: 3 modules, 2 internal edges, 5 external imports
+
+  Most depended-on (high fan-in = wide blast radius):
+    src/app.ts                                   fan-in 2    fan-out 1
 ```
